@@ -6,134 +6,230 @@ from streamlit_webrtc import WebRtcMode, webrtc_streamer
 from backend.config import get_settings
 from backend.db import utcnow
 from frontend.client import can, request
-from frontend.views.schedules import quick_session
 from vision.camera import RemoteProcessor
 
 
+def station_settings(policy):
+    with st.expander("Customize this station"):
+        st.caption(
+            "Choose a camera using the camera selector in the live preview. Stop the station before changing its settings."
+        )
+        if can("settings"):
+            with st.form("station_settings"):
+                name = st.text_input("Station name", policy["station_name"], max_chars=100)
+                mode = st.radio(
+                    "When a person is recognized",
+                    ["Mark attendance automatically", "Send check-in for staff review"],
+                    index=0 if policy["station_auto_mark"] else 1,
+                )
+                interval = st.slider(
+                    "Check for faces every (seconds)",
+                    0.2,
+                    5.0,
+                    float(policy["processing_interval"]),
+                    0.1,
+                )
+                st.caption(
+                    "A shorter interval responds faster and uses more CPU. Face matches do not prove liveness; photos or screens may fool the camera."
+                )
+                if st.form_submit_button(
+                    "Save station settings", disabled=bool(st.session_state.get("stream_id"))
+                ):
+                    request(
+                        "PUT",
+                        "/settings",
+                        json={
+                            **policy,
+                            "station_name": name,
+                            "station_auto_mark": mode == "Mark attendance automatically",
+                            "processing_interval": interval,
+                        },
+                    )
+                    st.session_state.notice = "Station settings saved."
+                    st.rerun()
+        st.caption(
+            "For matching sensitivity, image quality and resolution, open Settings → Camera settings."
+        )
+
+
+def stop_stream():
+    processor = st.session_state.pop("processor", None)
+    if processor:
+        processor.close()
+    elif st.session_state.get("stream_id"):
+        request("DELETE", f"/vision/streams/{st.session_state.stream_id}")
+    st.session_state.pop("stream_id", None)
+    st.session_state.pop("was_playing", None)
+
+
 def render():
-    st.caption("Choose an attendance session, then start the camera. Staff review each check-in.")
-    if st.session_state.pop("attendance_session_created", False):
-        st.session_state.new_attendance_session = False
-    now = utcnow()
-    sessions = {
-        s["id"]: s
-        for s in request("GET", "/sessions")
-        if not s["finalized"]
-        and datetime.fromisoformat(s["starts_at"]) <= now <= datetime.fromisoformat(s["cutoff_at"])
-    }
-    if not sessions:
-        st.info("Start a session to choose whose attendance you want to record.")
-        if can("schedule"):
-            quick_session()
-        else:
-            st.write("Ask an administrator to create a session and assign its people.")
-        return
-    preferred = st.session_state.get("preferred_session_id")
-    selected = st.selectbox(
-        "Attendance session",
-        list(sessions),
-        index=list(sessions).index(preferred) if preferred in sessions else 0,
-        format_func=lambda i: sessions[i]["name"],
-        disabled=bool(st.session_state.get("stream_id")),
+    config = request("GET", "/settings")
+    policy = config["policy"]
+    running = bool(st.session_state.get("stream_id"))
+    st.subheader(policy["station_name"])
+    st.write(
+        "One camera for everyone. Enrolled people walk up, look toward the camera, and their attendance is recorded."
     )
-    if not st.session_state.get("stream_id") and can("schedule"):
-        if st.toggle("Start a different session", key="new_attendance_session"):
-            quick_session()
-            return
-    policy = request("GET", "/settings")["policy"]
-    if not st.session_state.get("stream_id"):
-        if st.button("Start camera", type="primary"):
-            result = request("POST", "/vision/streams", json={"session_id": selected})
+    with st.expander("Class or shift attendance (optional)"):
+        scheduled = st.toggle("Use a scheduled session", key="scheduled_camera", disabled=running)
+        if scheduled:
+            now = utcnow()
+            sessions = {
+                s["id"]: s
+                for s in request("GET", "/sessions")
+                if not s.get("station")
+                and not s["finalized"]
+                and datetime.fromisoformat(s["starts_at"])
+                <= now
+                <= datetime.fromisoformat(s["cutoff_at"])
+            }
+            if not sessions:
+                st.info(
+                    "No scheduled check-in window is open. Create one in Settings → Schedules & organization, or turn this option off to use the daily station."
+                )
+            selected = (
+                st.selectbox(
+                    "Class or shift",
+                    list(sessions),
+                    format_func=lambda i: sessions[i]["name"],
+                    disabled=running,
+                )
+                if sessions
+                else None
+            )
+        else:
+            selected = None
+    station = request("GET", "/station")
+    if not scheduled:
+        count = station["enrolled_people"]
+        st.caption(
+            f"{count} enrolled {'person' if count == 1 else 'people'} ready · One check-in per person each day · New day starts automatically"
+        )
+    review = scheduled or not policy["station_auto_mark"]
+    st.caption(
+        "Check-ins go to Records → Review & correct."
+        if review
+        else "Stable face matches are marked Present automatically. Unknown faces are not registered or marked."
+    )
+    if not running:
+        if not station["enrolled_people"]:
+            st.info(
+                "Add face samples in People → Enroll a face. You can still open the camera to check its view."
+            )
+        if st.button(
+            "Start attendance station", type="primary", disabled=scheduled and selected is None
+        ):
+            with st.spinner("Starting the camera and face recognition…"):
+                result = (
+                    request("POST", "/vision/streams", json={"session_id": selected})
+                    if scheduled
+                    else request("POST", "/station/start")
+                )
             st.session_state.stream_id = result["stream_id"]
+            st.session_state.camera_session_id = selected
             st.rerun()
         st.caption(
-            "Allow camera access when your browser asks. Stay in view for a few seconds; no video is saved."
+            "Allow camera access once. Keep this page open and your computer awake while people check in. Video is not saved."
         )
-        return
-    if st.button("Stop camera"):
-        if st.session_state.get("processor"):
-            st.session_state.processor.close()
-            del st.session_state.processor
-        else:
-            request("DELETE", f"/vision/streams/{st.session_state.stream_id}")
-        del st.session_state.stream_id
-        st.rerun()
-    main, side = st.columns([3, 1])
-    with main:
-        stream_id = st.session_state.stream_id
-        token = st.session_state.token
-
-        def factory():
-            return RemoteProcessor(
-                get_settings().api_url,
-                token,
-                stream_id,
-                policy["processing_interval"],
-                policy["processing_width"],
-            )
-
-        context = webrtc_streamer(
-            key=f"camera-{stream_id}",
-            desired_playing_state=True,
-            mode=WebRtcMode.SENDRECV,
-            rtc_configuration={"iceServers": []},
-            media_stream_constraints={
-                "video": {"width": {"ideal": 640}, "height": {"ideal": 480}},
-                "audio": False,
-            },
-            video_processor_factory=factory,
-            async_processing=False,
-        )
-        if context.video_processor:
-            st.session_state.processor = context.video_processor
-        if not context.state.playing and st.session_state.get("was_playing"):
-            if st.session_state.get("processor"):
-                st.session_state.processor.close()
-                del st.session_state.processor
-            st.session_state.pop("stream_id", None)
-            st.session_state.was_playing = False
+    else:
+        if st.button("Stop attendance station"):
+            stop_stream()
             st.rerun()
-        st.session_state.was_playing = context.state.playing
-    with side:
+        camera, activity = st.columns([3, 1])
+        with camera:
+            stream_id = st.session_state.stream_id
+            token = st.session_state.token
 
-        @st.fragment(run_every=1)
-        def feedback():
-            processor = st.session_state.get("processor")
-            if not processor:
-                st.info("Allow camera access in your browser to begin.")
-                return
-            result = processor.snapshot()
-            st.metric("Last inference", f"{result.get('latency_ms', 0):.0f} ms")
-            if result.get("error"):
-                st.error(result["error"])
-            for face in result.get("faces", []):
-                st.write(f"**{face['name']}**")
-                st.caption(face["label"])
-                st.write(face["feedback"])
-                if face.get("similarity") is not None:
-                    st.caption(f"Cosine similarity: {face['similarity']:.3f}")
+            def factory():
+                return RemoteProcessor(
+                    get_settings().api_url,
+                    token,
+                    stream_id,
+                    policy["processing_interval"],
+                    policy["processing_width"],
+                    station=not scheduled,
+                )
 
-        feedback()
-    st.subheader("Check-ins from this session")
-    st.caption("To approve a camera check-in, go to Records → Review & correct.")
+            context = webrtc_streamer(
+                key=f"camera-{stream_id}",
+                desired_playing_state=True,
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration={"iceServers": []},
+                media_stream_constraints={
+                    "video": {
+                        "width": {"ideal": policy["processing_width"]},
+                        "height": {"ideal": 480},
+                    },
+                    "audio": False,
+                },
+                video_processor_factory=factory,
+                async_processing=False,
+            )
+            if context.video_processor:
+                st.session_state.processor = context.video_processor
+            if not context.state.playing and st.session_state.get("was_playing"):
+                stop_stream()
+                st.session_state.notice = "Camera disconnected. Start the station to reconnect."
+                st.rerun()
+            st.session_state.was_playing = context.state.playing
+        with activity:
 
-    @st.fragment(run_every=5)
+            @st.fragment(run_every=1)
+            def feedback():
+                processor = st.session_state.get("processor")
+                if not processor:
+                    st.info("Connecting camera… Allow access when your browser asks.")
+                    return
+                result = processor.snapshot()
+                if result.get("error"):
+                    st.error(result["error"])
+                    return
+                faces = result.get("faces", [])
+                if not faces:
+                    st.success("Station ready")
+                    st.write("Waiting for someone to approach…")
+                for face in faces:
+                    st.write(f"**{face['name']}**")
+                    st.caption(face["label"])
+                    if face.get("attendance_status") == "present":
+                        st.success(face.get("feedback", "Attendance marked"))
+                    else:
+                        st.info(face.get("feedback", "Look toward the camera for a moment…"))
+
+            feedback()
+    station_settings(policy)
+
+    @st.fragment(run_every=3)
     def recent():
-        day = sessions[selected]["local_date"]
-        rows = request("GET", "/attendance", params={"start": day, "end": day})
-        st.dataframe(
-            [
-                {
-                    "Name": row["full_name"],
-                    "ID": row["institutional_id"],
-                    "Status": row["status"].replace("_", " ").title(),
-                    "Check-in": row["check_in"],
-                }
-                for row in rows
-                if row["session_id"] == selected
-            ],
-            hide_index=True,
-            use_container_width=True,
+        current = request("GET", "/station")
+        session_id = selected if scheduled else (current["session"] or {}).get("id")
+        day = sessions[selected]["local_date"] if scheduled and selected else current["date"]
+        rows = (
+            request("GET", "/attendance", params={"start": day, "end": day}) if session_id else []
         )
+        rows = [row for row in rows if row["session_id"] == session_id]
+        a, b = st.columns(2)
+        a.metric("Checked in today", sum(row["status"] in {"present", "late"} for row in rows))
+        b.metric("Waiting for review", sum(row["status"] == "pending_verification" for row in rows))
+        st.subheader("Recent arrivals")
+        if not rows:
+            st.caption("Recognized people will appear here automatically.")
+        else:
+            st.dataframe(
+                [
+                    {
+                        "Name": row["full_name"],
+                        "ID": row["institutional_id"],
+                        "Type": row["category"].title(),
+                        "Status": row["status"].replace("_", " ").title(),
+                        "Check-in": datetime.fromisoformat(row["check_in"]).strftime("%I:%M:%S %p")
+                        if row["check_in"]
+                        else "—",
+                    }
+                    for row in sorted(rows, key=lambda row: row["check_in"] or "", reverse=True)
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
 
     recent()

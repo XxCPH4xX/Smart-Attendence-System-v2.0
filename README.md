@@ -2,7 +2,7 @@
 
 A local attendance application for students, teachers, staff and other institutional employees. FastAPI owns authentication, enrollment, attendance rules and reporting. Streamlit provides the administrative interface and a continuous WebRTC camera preview.
 
-Camera matches create **pending verification** records. An authorized operator must verify them. Face recognition is not a liveness check, and the application does not make disciplinary, grading or payroll decisions.
+The shared daily station marks stable face matches **Present** automatically. Administrators can switch it to staff review. Scheduled class/shift sessions retain staff verification. Face recognition is not a liveness check, and the application does not make disciplinary, grading or payroll decisions.
 
 ## Requirements
 
@@ -41,7 +41,7 @@ uv run uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
 uv run streamlit run frontend/app.py
 ```
 
-Open [the dashboard](http://127.0.0.1:8501). The [API reference](http://127.0.0.1:8000/docs) documents individual endpoints and their authentication requirements. Run one API worker: camera tracking and inference are process-local. Development reloads invalidate active camera streams.
+Open [the dashboard](http://127.0.0.1:8501). The [API reference](http://127.0.0.1:8000/docs) documents individual endpoints and their authentication requirements. Run one API worker: camera tracking and inference are process-local. Daily stations reconnect to the backend after an expired stream or service restart. A browser/device disconnect still requires starting the station again. Login expiry requires signing in again.
 
 On Windows, the same `uv` commands work in PowerShell. On Linux, OpenCV may require distribution packages for `libGL` and `libglib2.0`. macOS users must grant their browser camera access in System Settings → Privacy & Security → Camera. Camera access belongs to the browser, not the backend Python process. For localhost, no TURN server is needed. Remote WebRTC hosting, HTTPS and TURN deployment are outside the local installation.
 
@@ -55,13 +55,13 @@ For a first test, use **Home → Create test profile**. This explicitly creates 
 2. Use **People → Add person** to save a name, ID and person type. Expand **Optional details** when needed. The same ID cannot be registered twice. Student and employee profiles are separate from application login accounts.
 3. Record informed consent or an authorized institutional basis. Minors require a guardian authorization reference. Explain retention, revocation and the manual attendance alternative before capture.
 4. Upload or capture 3–12 distinct images. Keep one person in each image and vary head angle and lighting slightly. The server rejects poor quality, inconsistent identities and possible duplicate enrollment. Uploaded enrollment images are processed in memory and are not retained. Re-enrollment replaces templates without changing attendance history.
-5. Open **Take attendance**, choose the people and check-in duration, then **Start attendance session**. For future sessions and detailed scheduling, use **Settings → Schedules & organization**. Shift/class catalog entries label assignments; they do not silently create recurring sessions.
-6. Select an open session and press **Start camera**. Allow browser camera access when prompted. Recognized people must pass repeated matching observations. Unknown, ambiguous, poor-quality and inactive identities cannot create a new camera check-in.
-7. Review pending records in **Records → Review & correct**. Verify a genuine check-in in person, or reject/correct it with a reason. Repeated recognition cannot create a second person/session record, and passing the camera again never checks anyone out.
-8. After the session ends, finalize it to produce absent, leave or holiday records for missing roster members. A missing record before finalization means attendance is unresolved.
+5. Open **Take attendance → Start attendance station** once. All active enrolled people can check in through the same camera; no person selection is needed. New enrollments become available during the running session.
+6. Allow browser camera access and keep the page open with the computer awake. The camera keeps running as people approach. Stable matches save the person’s identity, date and check-in time; repeats do not duplicate that day’s station attendance. Unknown, ambiguous, poor-quality and inactive identities are not marked. The next local day starts automatically.
+7. Expand **Customize this station** to change its name, processing interval or automatic marking versus staff review. Select the camera in the live preview. Resolution, matching thresholds and image-quality controls are under **Settings → Camera settings**. Changing capture timing requires restarting the station.
+8. For scheduled class or shift attendance, create a roster in **Settings → Schedules & organization**, then choose **Class or shift attendance** on the camera screen. Scheduled sessions use their own windows, late rules and reviewed check-ins. Finalize an ended scheduled session to generate missing attendance; the daily station records arrivals only and never generates absences.
 9. Use **Records → Attendance history** to filter by dates, category, departments, classes, sections or individual people. CSV, Excel and PDF exports contain reporting metadata and no biometric vectors.
 
-Manual attendance and authorized checkout use the correction form, including a timezone-aware timestamp, reason and conflict check. Every change records its original and updated values. Leave/holiday changes do not silently rewrite existing records.
+Review or correct records in **Records → Review & correct**. Manual attendance and authorized checkout use the correction form, including a timezone-aware timestamp, reason and conflict check. Every change records its original and updated values. Leave/holiday changes do not silently rewrite existing records.
 
 ## Architecture
 
@@ -103,10 +103,10 @@ Unit/API tests use temporary databases, synthetic embeddings and mocked inferenc
 
 ## Limitations and next steps
 
-- No validated presentation-attack detection. Photos or screens may match; staff verification is mandatory.
+- No validated presentation-attack detection. Photos or screens may match; automatic station check-ins are labelled `face_matched`, not human-verified. Enable staff review where independent verification is required.
 - Face alignment, enrollment quality limits and thresholds require validation under local lighting, pose, demographic variation, occlusion and camera conditions. Attendance must remain contestable.
 - No institution-specific accuracy claims, MPS speed claims or cross-platform webcam certification.
-- Sessions are created explicitly. Recurring timetable generation, email password recovery, class-scoped teacher permissions and automatic shift checkout are not implemented.
+- The daily station runs while the browser page stays open, the computer stays awake, and the operator remains signed in. A powered-off camera cannot detect approach without separate sensing hardware. Scheduled class/shift sessions are created explicitly; recurring timetable generation, email password recovery, class-scoped teacher permissions and automatic shift checkout are not implemented.
 - The local database includes unencrypted identity and attendance fields; protect the device with full-disk encryption, OS accounts and restricted backups. Audit history retains personal values and needs an approved retention policy.
 - Audit records are append-only through the API, but a database administrator can alter them. External tamper-evident storage is not implemented.
 - OpenCV overlay text uses ASCII; full Unicode names appear in the dashboard. PDF uses built-in fonts and is best suited to Latin-script reports; use Excel for full Unicode names.

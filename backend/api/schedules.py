@@ -75,7 +75,9 @@ def sessions(user=Depends(require("read")), db=Depends(get_db)):
 
 @router.get("/sessions/{session_id}/roster")
 def roster(session_id: int, user=Depends(require("read")), db=Depends(get_db)):
-    lookup(db, AttendanceSession, session_id)
+    session = lookup(db, AttendanceSession, session_id)
+    if session.station_day is not None:
+        return list(db.scalars(select(Person.id).where(Person.active.is_(True))))
     return list(
         db.scalars(select(SessionMember.person_id).where(SessionMember.session_id == session_id))
     )

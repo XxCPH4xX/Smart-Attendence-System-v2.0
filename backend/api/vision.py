@@ -16,8 +16,39 @@ from backend.people import get_policy
 from backend.schemas import (
     StreamInput,
 )
+from backend.station import daily_station, enrolled_people
 
 router = APIRouter()
+
+
+@router.get("/station")
+def station_status(request: Request, user=Depends(require("read")), db=Depends(get_db)):
+    from zoneinfo import ZoneInfo
+
+    from backend.attendance import session_dict
+
+    now = utcnow()
+    day = now.astimezone(ZoneInfo(request.app.state.settings.timezone)).date()
+    session = db.scalar(select(AttendanceSession).where(AttendanceSession.station_day == day))
+    return {
+        "date": day.isoformat(),
+        "enrolled_people": db.scalar(
+            select(func.count()).select_from(enrolled_people(now).subquery())
+        ),
+        "session": session_dict(session) if session else None,
+    }
+
+
+@router.post("/station/start", status_code=201)
+def start_station(request: Request, user=Depends(require("camera")), db=Depends(get_db)):
+    service = request.app.state.vision
+    with service.lock:
+        service.load()
+        session = daily_station(db, user, request.app.state.settings.timezone)
+        key = service.create_stream(user, session.id, get_policy(db), station=True)
+        audit(db, user, "station_camera_started", "session", session.id)
+        db.commit()
+    return {"stream_id": key, "session_id": session.id}
 
 
 @router.get("/vision/status")

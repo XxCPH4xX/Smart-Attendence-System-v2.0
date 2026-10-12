@@ -7,66 +7,6 @@ from backend.db import utcnow
 from frontend.client import people_options, person_label, request
 
 
-def quick_session():
-    config = request("GET", "/settings")
-    options = people_options(active=True)
-    if not options:
-        st.info("Add a person in People before taking attendance.")
-        return
-    preferred = st.session_state.get("quick_person_id")
-    categories = ["student", "teacher", "staff", "other"]
-    initial = options[preferred]["category"] if preferred in options else "student"
-    category = st.selectbox(
-        "Who is attending?",
-        categories,
-        index=categories.index(initial),
-        format_func=str.title,
-        key="quick_category",
-    )
-    eligible = {key: person for key, person in options.items() if person["category"] == category}
-    with st.form("quick_session"):
-        chosen = st.multiselect(
-            "People to check in",
-            list(eligible),
-            default=[preferred] if preferred in eligible else [],
-            format_func=lambda i: person_label(eligible[i]),
-        )
-        duration = st.selectbox(
-            "Keep check-in open for",
-            [30, 60, 120],
-            index=1,
-            format_func=lambda minutes: f"{minutes} minutes",
-        )
-        if st.form_submit_button("Start attendance session", type="primary"):
-            if not chosen:
-                st.error("Choose at least one person for this session.")
-                return
-            now = utcnow()
-            is_demo = len(chosen) == 1 and eligible[chosen[0]]["institutional_id"] == "DEMO-001"
-            result = request(
-                "POST",
-                "/sessions",
-                json={
-                    "name": "Demo camera test" if is_demo else f"{category.title()} attendance",
-                    "category": category,
-                    "timezone": config["timezone"],
-                    "starts_at": (now - timedelta(seconds=1)).isoformat(),
-                    "ends_at": (now + timedelta(minutes=duration)).isoformat(),
-                    "cutoff_at": (now + timedelta(minutes=duration)).isoformat(),
-                    "grace_minutes": 10,
-                    "checkout_enabled": False,
-                    "person_ids": chosen,
-                },
-            )
-            st.session_state.preferred_session_id = result["id"]
-            st.session_state.attendance_session_created = True
-            st.session_state.notice = "Session ready. Start the camera when you're ready."
-            st.rerun()
-    st.caption(
-        "The session starts now. For future dates, shifts, holidays or leave, use Settings → Schedules & organization."
-    )
-
-
 def render():
     sessions = request("GET", "/sessions")
     st.dataframe(sessions, hide_index=True, use_container_width=True)
@@ -114,7 +54,7 @@ def render():
                 )
                 st.success(f"Session #{result['id']} created with an explicit roster")
     with tabs[1]:
-        candidates = {s["id"]: s for s in sessions if not s["finalized"]}
+        candidates = {s["id"]: s for s in sessions if not s["finalized"] and not s.get("station")}
         st.write(
             "After a session ends, finalize it to create absent, approved leave, or holiday records for roster members without a record. Pending recognition stays pending."
         )
@@ -247,7 +187,7 @@ def corrections():
         "Use this form for non-biometric attendance, rejected recognition, exceptions, and authorized checkout. Every change keeps the previous value and your reason in the audit log."
     )
     members = request("GET", f"/sessions/{selected}/roster")
-    options = people_options(session["category"])
+    options = people_options(None if session.get("station") else session["category"])
     options = {i: p for i, p in options.items() if i in members}
     if not options:
         return

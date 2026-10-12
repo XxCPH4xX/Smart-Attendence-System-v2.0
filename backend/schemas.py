@@ -182,6 +182,8 @@ class LeaveInput(Input):
 
 
 class PolicyInput(Input):
+    station_name: str = Field(default="Live attendance station", min_length=2, max_length=100)
+    station_auto_mark: bool = True
     similarity_threshold: float = Field(default=0.8, ge=0.5, le=0.99)
     ambiguity_margin: float = Field(default=0.08, ge=0.02, le=0.5)
     stable_observations: int = Field(default=3, ge=3, le=10)

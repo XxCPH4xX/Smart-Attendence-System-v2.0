@@ -135,6 +135,7 @@ class AttendanceSession(Base):
     name: Mapped[str] = mapped_column(String(160))
     category: Mapped[str] = mapped_column(String(20))
     local_date: Mapped[date] = mapped_column(Date, index=True)
+    station_day: Mapped[date | None] = mapped_column(Date)
     timezone: Mapped[str] = mapped_column(String(80))
     starts_at: Mapped[datetime] = mapped_column(UTCDateTime)
     ends_at: Mapped[datetime] = mapped_column(UTCDateTime)
@@ -211,3 +212,4 @@ class AuditLog(Base):
 
 
 Index("ix_session_date_category", AttendanceSession.local_date, AttendanceSession.category)
+Index("ix_station_day", AttendanceSession.station_day, unique=True)

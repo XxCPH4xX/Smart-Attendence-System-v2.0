@@ -47,7 +47,10 @@ def membership(db, session, person_id):
     if not person or not person.active:
         raise HTTPException(409, "Person is inactive or unavailable")
     if not db.get(SessionMember, (session.id, person_id)):
-        raise HTTPException(409, "Person is not in this session's roster")
+        if session.station_day is None:
+            raise HTTPException(409, "Person is not in this session's roster")
+        db.add(SessionMember(session_id=session.id, person_id=person_id))
+        db.flush()
     return person
 
 
@@ -76,6 +79,11 @@ def recognized_checkin(db, user, session_id, person_id, event_key, now=None):
     """Only server-side, temporally stable vision results call this entry point."""
     now = now or utcnow()
     session = get_session(db, session_id)
+    if session.station_day is not None:
+        from backend.station import enrolled_people
+
+        if not db.scalar(enrolled_people(now).where(Person.id == person_id)):
+            raise HTTPException(409, "Person has no active, authorized face enrollment")
     membership(db, session, person_id)
     existing = find_record(db, session_id, person_id)
     if existing:
@@ -85,27 +93,32 @@ def recognized_checkin(db, user, session_id, person_id, event_key, now=None):
     exception = exception_status(db, session, person_id)
     if exception:
         raise HTTPException(409, f"Attendance is covered by {exception.replace('_', ' ')}")
-    # Camera recognition cannot establish liveness. A human must approve each record.
+    from backend.people import get_policy
+
+    automatic = session.station_day is not None and get_policy(db).station_auto_mark
     record = AttendanceRecord(
         session_id=session_id,
         person_id=person_id,
-        status="pending_verification",
+        status="present" if automatic else "pending_verification",
         source="face",
-        verification="pending",
+        verification="face_matched" if automatic else "pending",
         check_in=now,
     )
     db.add(record)
     db.flush()
     db.add(
         AttendanceEvent(
-            event_key=event_key, record_id=record.id, actor_id=user.id, action="recognition_pending"
+            event_key=event_key,
+            record_id=record.id,
+            actor_id=user.id,
+            action="recognition_checkin" if automatic else "recognition_pending",
         )
     )
     audit(
         db, user, "attendance_recognition", "attendance", record.id, after=record_snapshot(record)
     )
     db.commit()
-    return record, "Recorded; staff verification required"
+    return record, "Attendance marked" if automatic else "Recorded; staff verification required"
 
 
 def correct(db, user, data):
@@ -163,7 +176,8 @@ def approve(db, user, record_id, reason):
     before = record_snapshot(record)
     record.status = (
         "late"
-        if record.check_in > session.starts_at + timedelta(minutes=session.grace_minutes)
+        if session.station_day is None
+        and record.check_in > session.starts_at + timedelta(minutes=session.grace_minutes)
         else "present"
     )
     record.verification = "staff_verified"
@@ -194,6 +208,10 @@ def approve(db, user, record_id, reason):
 def finalize(db, user, session_id, now=None):
     now = now or utcnow()
     session = get_session(db, session_id)
+    if session.station_day is not None:
+        raise HTTPException(
+            409, "Daily stations record arrivals only; use a scheduled roster for absences"
+        )
     if now <= session.ends_at:
         raise HTTPException(409, "Session must end before absences can be finalized")
     if session.finalized:
@@ -240,6 +258,7 @@ def session_dict(session):
         "name": session.name,
         "category": session.category,
         "local_date": session.local_date.isoformat(),
+        "station": session.station_day is not None,
         "timezone": session.timezone,
         "starts_at": session.starts_at.astimezone(zone).isoformat(),
         "ends_at": session.ends_at.astimezone(zone).isoformat(),

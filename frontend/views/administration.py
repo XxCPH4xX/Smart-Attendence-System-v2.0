@@ -99,7 +99,7 @@ def settings(system=False):
         )
     else:
         st.warning(
-            "Similarity scores are not probabilities. The default threshold is provisional until evaluated on authorized local data. All camera check-ins require staff verification."
+            "Similarity scores are not probabilities. The default threshold is provisional until evaluated on authorized local data. Daily station marking and staff review can be configured on Take attendance. Face matching does not prove liveness."
         )
         with st.form("recognition_settings"):
             a, b = st.columns(2)

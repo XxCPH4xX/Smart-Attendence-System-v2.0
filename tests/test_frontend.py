@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from streamlit.testing.v1 import AppTest
 
@@ -71,21 +73,37 @@ def test_dashboard_pages_use_live_api_data(client, person, attendance_session, m
     assert not demo["enrolled"]
     assert len(client.get(f"/people/{demo['id']}/enrollments").json()["consents"]) == 1
 
-    # A demo session uses its own explicit roster, even with another session open.
-    app.session_state["quick_person_id"] = demo["id"]
-    app.session_state["new_attendance_session"] = True
+    # The daily station needs no person selection or per-person session setup.
     app.sidebar.radio[0].set_value("Take attendance").run()
-    assert app.multiselect[0].value == [demo["id"]]
+    assert not app.exception
+    assert not app.error
+    assert len(app.multiselect) == 0
+    assert any(button.label == "Start attendance station" for button in app.button)
+    assert any(expander.label == "Customize this station" for expander in app.expander)
+
+    client.app.state.vision.load = Mock()
+    monkeypatch.setattr(
+        live,
+        "webrtc_streamer",
+        lambda **kwargs: SimpleNamespace(
+            video_processor=None, state=SimpleNamespace(playing=False)
+        ),
+    )
     next(
-        button for button in app.button if button.label == "Start attendance session"
+        button for button in app.button if button.label == "Start attendance station"
     ).click().run()
     assert not app.exception
     assert not app.error
-    assert not app.toggle[0].value
-    assert any(button.label == "Start camera" for button in app.button)
-    session_id = app.session_state["preferred_session_id"]
-    assert client.get(f"/sessions/{session_id}/roster").json() == [demo["id"]]
-    assert app.selectbox[0].value == session_id
+    assert len(app.multiselect) == 0
+    assert client.get("/station").json()["session"]["station"]
+    next(button for button in app.button if button.label == "Stop attendance station").click().run()
+    assert not app.exception
+    assert "stream_id" not in app.session_state
+    next(field for field in app.text_input if field.label == "Station name").set_value("Reception")
+    next(button for button in app.button if button.label == "Save station settings").click().run()
+    assert not app.exception
+    assert not app.error
+    assert client.get("/settings").json()["policy"]["station_name"] == "Reception"
 
 
 def test_sign_in_form_renders():

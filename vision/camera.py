@@ -39,11 +39,12 @@ def draw_overlays(frame, faces):
 class RemoteProcessor:
     """One pending inference at most; preview frames never queue behind inference."""
 
-    def __init__(self, api_url, token, stream_id, interval=0.5, width=640):
+    def __init__(self, api_url, token, stream_id, interval=0.5, width=640, station=False):
         self.client = httpx.Client(
             base_url=api_url, headers={"Authorization": f"Bearer {token}"}, timeout=20
         )
         self.stream_id = stream_id
+        self.station = station
         self.interval, self.width = interval, width
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recognition")
         self.pending = None
@@ -62,6 +63,12 @@ class RemoteProcessor:
                 content=jpeg.tobytes(),
                 headers={"Content-Type": "image/jpeg"},
             )
+            if response.status_code == 404 and self.station:
+                restart = self.client.post("/station/start")
+                if restart.status_code == 201:
+                    self.stream_id = restart.json()["stream_id"]
+                    return {"faces": [], "error": None}
+                response = restart
             if response.status_code != 200:
                 detail = response.json().get("detail", "Recognition unavailable")
                 return {"faces": [], "error": str(detail)}

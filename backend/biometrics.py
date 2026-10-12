@@ -236,7 +236,7 @@ class VisionService:
                 "index_version": self.index.version,
             }
 
-    def create_stream(self, user, session_id, policy):
+    def create_stream(self, user, session_id, policy, station=False):
         with self.stream_lock:
             now = time.monotonic()
             self.streams = {k: v for k, v in self.streams.items() if now - v["last_seen"] < 120}
@@ -249,6 +249,7 @@ class VisionService:
             self.streams[key] = {
                 "user_id": user.id,
                 "session_id": session_id,
+                "station": station,
                 "last_seen": now,
                 "last_frame": 0,
                 "tracker": StabilityTracker(policy.stable_observations, policy.stable_seconds),
@@ -271,6 +272,11 @@ class VisionService:
                     raise HTTPException(429, "Frame processing rate exceeded")
                 stream["last_seen"] = stream["last_frame"] = started
             faces = self.analyze(db, rgb)
+            if stream.get("station"):
+                from backend.station import daily_station
+
+                session = daily_station(db, user, self.settings.timezone)
+                stream["session_id"] = session.id
             flags = stream["tracker"].update([(f["box"], f["person_id"]) for f in faces], started)
             for face, stable in zip(faces, flags, strict=True):
                 face["stable"] = stable
@@ -282,7 +288,7 @@ class VisionService:
                         user,
                         stream["session_id"],
                         face["person_id"],
-                        f"{key}:{face['person_id']}",
+                        f"{key}:{stream['session_id']}:{face['person_id']}",
                     )
                     face.update(
                         feedback=feedback, record_id=record.id, attendance_status=record.status

@@ -25,7 +25,8 @@ def settings(request: Request, user=Depends(require("read")), db=Depends(get_db)
         "institution": request.app.state.settings.institution,
         "timezone": request.app.state.settings.timezone,
         "device": request.app.state.settings.device,
-        "staff_verification_required": True,
+        "station_staff_verification_required": not get_policy(db).station_auto_mark,
+        "scheduled_staff_verification_required": True,
         "index_version": db.get(Policy, 1).index_version,
     }
 

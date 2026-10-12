@@ -14,7 +14,7 @@ Before enrollment, record the purpose, institutional authority or explicit conse
 
 Do not collect third-party images or use a public dataset as if consent covered institutional attendance. Do not auto-enroll strangers. Enrollment uploads stay in process memory and are not deliberately logged or saved; encrypted templates remain biometric personal data. Profile photos are separately uploaded and encrypted. No continuous footage is recorded.
 
-If attendance is disputed, inspect the pending record and session roster, verify using an independent source, and enter a reasoned manual correction. The audit trail retains before/after values. Never infer misconduct from unknown recognition or use automated matching alone for grading, salary or disciplinary decisions.
+If attendance is disputed, inspect the attendance record and its verification method, verify using an independent source, and enter a reasoned manual correction. The audit trail retains before/after values. Never infer misconduct from unknown recognition or use automated matching alone for grading, salary or disciplinary decisions.
 
 ## Retention and deletion
 
@@ -45,7 +45,7 @@ Automated tests intentionally do not access a webcam or record people. With auth
 1. Log in, register each category and verify permission boundaries with a restricted account.
 2. Enroll at least three distinct images, including mild lighting/pose changes; verify multi-face and blurred samples are rejected.
 3. Start a current session with an explicit roster and camera permission. Check a known face, an unknown person and multiple people in view. Verify labels follow boxes and the camera stays responsive.
-4. Hold a known face in view for repeated observations. Confirm one pending record and no duplicate on subsequent frames. Approve it and confirm the grace/late rule.
+4. Hold a known face in view for repeated observations. In daily station mode, confirm one Present record per person per local day and no duplicate on subsequent frames or a station restart. Enable staff review and confirm pending check-ins need approval. For scheduled sessions, approve a pending record and confirm the grace/late rule.
 5. Stop the camera, deny permission, disconnect the camera and stop the backend independently. Confirm feedback, resource release and recovery by starting a fresh stream.
 6. Re-enroll, revoke consent and deactivate a person while recognition is open; verify the next frames reflect the change.
 7. Test manual attendance, checkout-enabled/disabled sessions, end-of-session finalization, holidays, leave and disputed attendance corrections.
@@ -57,7 +57,7 @@ Automated tests intentionally do not access a webcam or record people. With auth
 - **No camera:** close other camera applications; allow camera use in both the browser and OS settings. Use `localhost`, not an insecure LAN URL. A desktop camera test cannot run in a headless environment.
 - **Models unavailable:** run `attendance download-models`, then `attendance check-models`. Do not copy arbitrary weights into the assets directory.
 - **Slow inference:** use CPU first, reduce processing width or increase the interval. MPS is optional through `ATTENDANCE_DEVICE=mps`; restart and measure it locally. Preview frames do not queue behind model inference.
-- **Recognition expired:** press Stop camera, then Start camera again. Idle server streams expire after two minutes; missing observations reset identity stability.
+- **Recognition expired:** daily stations reconnect automatically after an expired backend stream. For browser/device disconnections, use Stop attendance station and Start attendance station. Idle server streams expire after two minutes; missing observations reset identity stability.
 - **Enrollment rejects a face:** use a larger, sharper, evenly lit face. Verify only one face is present and that the samples show the same person. Duplicate matching requires staff review, not an automatic override.
 - **Dependency errors:** use Python 3.11 and `uv sync --locked`; do not independently upgrade torch, torchvision, NumPy or Pillow. PyAV wheels require macOS 14 on Apple Silicon with the selected version.
 - **Database not initialized:** run `attendance init` before starting the dashboard. Existing databases are migrated without adding demonstration data.

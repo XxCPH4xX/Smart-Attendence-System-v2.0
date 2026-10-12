@@ -10,7 +10,7 @@ def render():
     st.subheader("What would you like to do?")
     columns = st.columns(3)
     actions = [
-        ("Take attendance", "Open the camera and check people in.", "camera", "Take attendance"),
+        ("Take attendance", "Start one camera for everyone.", "camera", "Take attendance"),
         ("Add a person", "Save a name, ID and face samples.", "people", "People"),
         ("View records", "Review attendance and download reports.", "read", "Records"),
     ]
@@ -76,4 +76,6 @@ def render():
     a.metric("People registered", sum(summary["people"].values()))
     b.metric("Checked in", totals.get("present", 0) + totals.get("late", 0))
     c.metric("Waiting for review", totals.get("pending_verification", 0))
-    st.caption("Attendance counts are per session. Camera check-ins need a staff review.")
+    st.caption(
+        "The daily station marks enrolled people automatically. Scheduled sessions can require review."
+    )
