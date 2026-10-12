@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -97,65 +97,24 @@ def trends(rows):
     )
 
 
-def overview():
-    summary = request("GET", "/overview")
-    st.caption(f"{summary['institution']} · {summary['date']} · {summary['timezone']}")
-    people = summary["people"]
-    columns = st.columns(4)
-    for col, label, value in zip(
-        columns,
-        ["Registered people", "Students", "Teachers", "Staff / other"],
-        [
-            sum(people.values()),
-            people.get("student", 0),
-            people.get("teacher", 0),
-            people.get("staff", 0) + people.get("other", 0),
-        ],
-        strict=True,
-    ):
-        col.metric(label, value)
-    columns = st.columns(5)
-    statuses = summary["attendance"]
-    for col, label, value in zip(
-        columns,
-        ["Present", "Late", "Absent", "Pending verification", "Active sessions"],
-        [
-            statuses.get("present", 0),
-            statuses.get("late", 0),
-            statuses.get("absent", 0),
-            statuses.get("pending_verification", 0),
-            summary["active_sessions"],
-        ],
-        strict=True,
-    ):
-        col.metric(label, value)
-    st.caption(
-        "Attendance counts are person-session records. Absences are created only when an authorized user finalizes an ended session."
-    )
-    today = date.fromisoformat(summary["date"])
-    trends(
-        request(
-            "GET",
-            "/attendance",
-            params={"start": (today - timedelta(days=89)).isoformat(), "end": today.isoformat()},
-        )
-    )
-
-
 def history(category=None, export=False):
     config = request("GET", "/settings")
     today = utcnow().astimezone(ZoneInfo(config["timezone"])).date()
-    a, b, c = st.columns(3)
-    period = a.selectbox("Reporting period", ["Today", "This week", "This month", "Custom"])
-    initial = (
+    period = st.selectbox(
+        "Show attendance for", ["Today", "This week", "This month", "Custom dates"]
+    )
+    start = (
         today
         if period == "Today"
         else today - timedelta(days=today.weekday())
         if period == "This week"
         else today.replace(day=1)
     )
-    start = b.date_input("From", initial, disabled=period != "Custom")
-    end = c.date_input("Through", today, disabled=period != "Custom")
+    end = today
+    if period == "Custom dates":
+        a, b = st.columns(2)
+        start = a.date_input("From", today.replace(day=1))
+        end = b.date_input("Through", today)
     params = {"start": start.isoformat(), "end": end.isoformat()}
     if category:
         params["category"] = category
@@ -163,40 +122,66 @@ def history(category=None, export=False):
         selected = st.selectbox("Category", ["All", "student", "teacher", "staff", "other"])
         if selected != "All":
             params["category"] = selected
-    catalog = request("GET", "/catalog")
-    a, b, c = st.columns(3)
-    departments = {
-        None: "All departments",
-        **{e["id"]: e["name"] for e in catalog if e["kind"] == "department"},
-    }
-    department = a.selectbox(
-        "Department",
-        list(departments),
-        format_func=departments.get,
-        key=f"history_department_{category}",
-    )
-    classes = {None: "All classes", **{e["id"]: e["name"] for e in catalog if e["kind"] == "class"}}
-    class_id = b.selectbox(
-        "Class / program", list(classes), format_func=classes.get, key=f"history_class_{category}"
-    )
-    section = c.text_input("Section")
-    for key, value in [
-        ("department_id", department),
-        ("class_id", class_id),
-        ("section", section or None),
-    ]:
-        if value is not None:
-            params[key] = value
-    options = people_options(category)
-    selected_person = st.selectbox(
-        "Individual",
-        [None, *options],
-        format_func=lambda i: "All people" if i is None else person_label(options[i]),
-    )
-    if selected_person:
-        params["person_id"] = selected_person
+    with st.expander("Filter by person, department or class"):
+        catalog = request("GET", "/catalog")
+        a, b, c = st.columns(3)
+        departments = {
+            None: "All departments",
+            **{e["id"]: e["name"] for e in catalog if e["kind"] == "department"},
+        }
+        department = a.selectbox(
+            "Department",
+            list(departments),
+            format_func=departments.get,
+            key=f"history_department_{category}",
+        )
+        classes = {
+            None: "All classes",
+            **{e["id"]: e["name"] for e in catalog if e["kind"] == "class"},
+        }
+        class_id = b.selectbox(
+            "Class / program",
+            list(classes),
+            format_func=classes.get,
+            key=f"history_class_{category}",
+        )
+        section = c.text_input("Section")
+        for key, value in [
+            ("department_id", department),
+            ("class_id", class_id),
+            ("section", section or None),
+        ]:
+            if value is not None:
+                params[key] = value
+        options = people_options(category)
+        selected_person = st.selectbox(
+            "Individual",
+            [None, *options],
+            format_func=lambda i: "All people" if i is None else person_label(options[i]),
+        )
+        if selected_person:
+            params["person_id"] = selected_person
     rows = request("GET", "/attendance", params=params)
-    st.dataframe(rows, hide_index=True, use_container_width=True)
+    labels = {
+        "full_name": "Name",
+        "institutional_id": "ID",
+        "category": "Type",
+        "date": "Date",
+        "session": "Session",
+        "status": "Attendance",
+        "check_in": "Check-in",
+        "check_out": "Check-out",
+    }
+    display_rows = [
+        {
+            label: row[key].replace("_", " ").title() if key in {"category", "status"} else row[key]
+            for key, label in labels.items()
+        }
+        for row in rows
+    ]
+    st.dataframe(display_rows, hide_index=True, use_container_width=True)
+    if not rows:
+        st.info("No attendance recorded for these filters yet.")
     if rows:
         counted = [r for r in rows if r["status"] in {"present", "late", "absent"}]
         if counted:
@@ -205,7 +190,8 @@ def history(category=None, export=False):
         st.caption(
             "Rate = (present + late) / (present + late + finalized absent). Pending, leave, excused, holidays and unfinalized missing records are excluded."
         )
-        trends(rows)
+        with st.expander("Charts and trends"):
+            trends(rows)
     if can("export") and (export or rows):
         kind = st.selectbox("Export format", ["csv", "xlsx", "pdf"])
         if st.button("Prepare report"):

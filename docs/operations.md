@@ -18,7 +18,7 @@ If attendance is disputed, inspect the pending record and session roster, verify
 
 ## Retention and deletion
 
-Revoke biometrics from Manage People to remove templates and the profile photo and mark authorization records revoked. Recognition index versioning makes the change visible on the next request. Deactivation also excludes a person from the index and attendance service. Re-enrollment replaces templates atomically without duplicating a person.
+Revoke biometrics from People → Enroll a face → Enrollment history and removal to remove templates and the profile photo and mark authorization records revoked. Recognition index versioning makes the change visible on the next request. Deactivation also excludes a person from the index and attendance service. Re-enrollment replaces templates atomically without duplicating a person.
 
 Template expiration is assigned when enrolled; changing the setting affects future enrollment. `attendance purge-expired` previews deletion of expired templates, sessions, their records/events/rosters, expired leave records and login sessions. Add `--apply` only after an authorized archive or backup decision. People with retained rosters or leave cannot be deleted; deactivate them until operational retention permits deletion. A manual correction after deactivation requires an administrator to reactivate the record temporarily, correct it, then deactivate it again; all steps are audited.
 
@@ -57,7 +57,7 @@ Automated tests intentionally do not access a webcam or record people. With auth
 - **No camera:** close other camera applications; allow camera use in both the browser and OS settings. Use `localhost`, not an insecure LAN URL. A desktop camera test cannot run in a headless environment.
 - **Models unavailable:** run `attendance download-models`, then `attendance check-models`. Do not copy arbitrary weights into the assets directory.
 - **Slow inference:** use CPU first, reduce processing width or increase the interval. MPS is optional through `ATTENDANCE_DEVICE=mps`; restart and measure it locally. Preview frames do not queue behind model inference.
-- **Recognition expired:** press Release camera session, prepare it again and START. Idle server streams expire after two minutes; missing observations reset identity stability.
+- **Recognition expired:** press Stop camera, then Start camera again. Idle server streams expire after two minutes; missing observations reset identity stability.
 - **Enrollment rejects a face:** use a larger, sharper, evenly lit face. Verify only one face is present and that the samples show the same person. Duplicate matching requires staff review, not an automatic override.
 - **Dependency errors:** use Python 3.11 and `uv sync --locked`; do not independently upgrade torch, torchvision, NumPy or Pillow. PyAV wheels require macOS 14 on Apple Silicon with the selected version.
 - **Database not initialized:** run `attendance init` before starting the dashboard. Existing databases are migrated without adding demonstration data.

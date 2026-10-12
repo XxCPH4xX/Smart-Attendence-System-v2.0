@@ -5,12 +5,15 @@ from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 from backend.config import get_settings
 from backend.db import utcnow
-from frontend.client import request
+from frontend.client import can, request
+from frontend.views.schedules import quick_session
 from vision.camera import RemoteProcessor
 
 
 def render():
-    st.caption("Continuous camera preview · CPU-friendly recognition · Staff verification required")
+    st.caption("Choose an attendance session, then start the camera. Staff review each check-in.")
+    if st.session_state.pop("attendance_session_created", False):
+        st.session_state.new_attendance_session = False
     now = utcnow()
     sessions = {
         s["id"]: s
@@ -19,27 +22,35 @@ def render():
         and datetime.fromisoformat(s["starts_at"]) <= now <= datetime.fromisoformat(s["cutoff_at"])
     }
     if not sessions:
-        st.info(
-            "There is no open check-in session. Create a session and assign its roster in Sessions & Schedules."
-        )
+        st.info("Start a session to choose whose attendance you want to record.")
+        if can("schedule"):
+            quick_session()
+        else:
+            st.write("Ask an administrator to create a session and assign its people.")
         return
+    preferred = st.session_state.get("preferred_session_id")
     selected = st.selectbox(
-        "Active attendance session",
+        "Attendance session",
         list(sessions),
-        format_func=lambda i: f"#{i} · {sessions[i]['name']}",
+        index=list(sessions).index(preferred) if preferred in sessions else 0,
+        format_func=lambda i: sessions[i]["name"],
         disabled=bool(st.session_state.get("stream_id")),
     )
+    if not st.session_state.get("stream_id") and can("schedule"):
+        if st.toggle("Start a different session", key="new_attendance_session"):
+            quick_session()
+            return
     policy = request("GET", "/settings")["policy"]
     if not st.session_state.get("stream_id"):
-        if st.button("Prepare camera", type="primary"):
+        if st.button("Start camera", type="primary"):
             result = request("POST", "/vision/streams", json={"session_id": selected})
             st.session_state.stream_id = result["stream_id"]
             st.rerun()
         st.caption(
-            "After preparing, use START on the video panel and allow browser camera access. No continuous video is recorded."
+            "Allow camera access when your browser asks. Stay in view for a few seconds; no video is saved."
         )
         return
-    if st.button("Release camera session"):
+    if st.button("Stop camera"):
         if st.session_state.get("processor"):
             st.session_state.processor.close()
             del st.session_state.processor
@@ -63,6 +74,7 @@ def render():
 
         context = webrtc_streamer(
             key=f"camera-{stream_id}",
+            desired_playing_state=True,
             mode=WebRtcMode.SENDRECV,
             rtc_configuration={"iceServers": []},
             media_stream_constraints={
@@ -88,7 +100,7 @@ def render():
         def feedback():
             processor = st.session_state.get("processor")
             if not processor:
-                st.info("Use START to open the browser camera.")
+                st.info("Allow camera access in your browser to begin.")
                 return
             result = processor.snapshot()
             st.metric("Last inference", f"{result.get('latency_ms', 0):.0f} ms")
@@ -102,14 +114,24 @@ def render():
                     st.caption(f"Cosine similarity: {face['similarity']:.3f}")
 
         feedback()
-    st.subheader("Recent attendance in this session")
+    st.subheader("Check-ins from this session")
+    st.caption("To approve a camera check-in, go to Records → Review & correct.")
 
     @st.fragment(run_every=5)
     def recent():
         day = sessions[selected]["local_date"]
         rows = request("GET", "/attendance", params={"start": day, "end": day})
         st.dataframe(
-            [r for r in rows if r["session_id"] == selected],
+            [
+                {
+                    "Name": row["full_name"],
+                    "ID": row["institutional_id"],
+                    "Status": row["status"].replace("_", " ").title(),
+                    "Check-in": row["check_in"],
+                }
+                for row in rows
+                if row["session_id"] == selected
+            ],
             hide_index=True,
             use_container_width=True,
         )

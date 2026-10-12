@@ -7,6 +7,66 @@ from backend.db import utcnow
 from frontend.client import people_options, person_label, request
 
 
+def quick_session():
+    config = request("GET", "/settings")
+    options = people_options(active=True)
+    if not options:
+        st.info("Add a person in People before taking attendance.")
+        return
+    preferred = st.session_state.get("quick_person_id")
+    categories = ["student", "teacher", "staff", "other"]
+    initial = options[preferred]["category"] if preferred in options else "student"
+    category = st.selectbox(
+        "Who is attending?",
+        categories,
+        index=categories.index(initial),
+        format_func=str.title,
+        key="quick_category",
+    )
+    eligible = {key: person for key, person in options.items() if person["category"] == category}
+    with st.form("quick_session"):
+        chosen = st.multiselect(
+            "People to check in",
+            list(eligible),
+            default=[preferred] if preferred in eligible else [],
+            format_func=lambda i: person_label(eligible[i]),
+        )
+        duration = st.selectbox(
+            "Keep check-in open for",
+            [30, 60, 120],
+            index=1,
+            format_func=lambda minutes: f"{minutes} minutes",
+        )
+        if st.form_submit_button("Start attendance session", type="primary"):
+            if not chosen:
+                st.error("Choose at least one person for this session.")
+                return
+            now = utcnow()
+            is_demo = len(chosen) == 1 and eligible[chosen[0]]["institutional_id"] == "DEMO-001"
+            result = request(
+                "POST",
+                "/sessions",
+                json={
+                    "name": "Demo camera test" if is_demo else f"{category.title()} attendance",
+                    "category": category,
+                    "timezone": config["timezone"],
+                    "starts_at": (now - timedelta(seconds=1)).isoformat(),
+                    "ends_at": (now + timedelta(minutes=duration)).isoformat(),
+                    "cutoff_at": (now + timedelta(minutes=duration)).isoformat(),
+                    "grace_minutes": 10,
+                    "checkout_enabled": False,
+                    "person_ids": chosen,
+                },
+            )
+            st.session_state.preferred_session_id = result["id"]
+            st.session_state.attendance_session_created = True
+            st.session_state.notice = "Session ready. Start the camera when you're ready."
+            st.rerun()
+    st.caption(
+        "The session starts now. For future dates, shifts, holidays or leave, use Settings → Schedules & organization."
+    )
+
+
 def render():
     sessions = request("GET", "/sessions")
     st.dataframe(sessions, hide_index=True, use_container_width=True)
@@ -100,7 +160,7 @@ def render():
                     request("DELETE", f"/leaves/{leave_id}", json={"reason": reason})
                     st.rerun()
         st.caption(
-            "Changing leave or holidays does not silently rewrite existing attendance; use Manual Corrections for those records."
+            "Changing leave or holidays does not rewrite existing attendance; use Records → Review & correct for those records."
         )
     with tabs[3]:
         holidays = request("GET", "/holidays")
@@ -206,24 +266,40 @@ def corrections():
         "holiday",
         "pending_verification",
     ]
+    status = st.selectbox(
+        "Attendance status",
+        statuses,
+        index=statuses.index(existing["status"]) if existing else 0,
+        format_func=lambda value: value.replace("_", " ").title(),
+    )
+    zone = ZoneInfo(session["timezone"])
+    attending = status in {"present", "late", "pending_verification"}
+    default_in = datetime.fromisoformat(
+        existing["check_in"] if existing and existing["check_in"] else session["starts_at"]
+    ).astimezone(zone)
+    default_out = datetime.fromisoformat(
+        existing["check_out"] if existing and existing["check_out"] else session["ends_at"]
+    ).astimezone(zone)
+    checkout = (
+        attending
+        and session["checkout_enabled"]
+        and st.checkbox("Include checkout time", bool(existing and existing["check_out"]))
+    )
     with st.form("correction"):
-        status = st.selectbox(
-            "Correct attendance status",
-            statuses,
-            index=statuses.index(existing["status"]) if existing else 0,
-        )
-        check_in = st.text_input(
-            "Check-in (ISO timestamp with timezone, or empty)",
-            existing["check_in"] if existing else session["starts_at"],
-        )
-        check_out = st.text_input(
-            "Check-out (ISO timestamp with timezone, or empty)",
-            existing["check_out"] if existing else "",
-            disabled=not session["checkout_enabled"],
-        )
-        st.caption("For absent, leave, excused or holiday records, clear both timestamps.")
-        reason = st.text_area("Reason for this attendance decision")
-        if st.form_submit_button("Save audited correction", type="primary"):
+        check_in = check_out = None
+        if attending:
+            a, b = st.columns(2)
+            in_date = a.date_input("Check-in date", default_in.date())
+            in_time = b.time_input("Check-in time", default_in.time())
+            check_in = datetime.combine(in_date, in_time, zone).isoformat()
+        if checkout:
+            a, b = st.columns(2)
+            out_date = a.date_input("Check-out date", default_out.date())
+            out_time = b.time_input("Check-out time", default_out.time())
+            check_out = datetime.combine(out_date, out_time, zone).isoformat()
+        st.caption(f"Times use {session['timezone']}.")
+        reason = st.text_area("Why are you recording or changing this attendance?")
+        if st.form_submit_button("Save attendance", type="primary"):
             request(
                 "POST",
                 "/attendance/correct",
@@ -231,10 +307,11 @@ def corrections():
                     "session_id": selected,
                     "person_id": person_id,
                     "status": status,
-                    "check_in": check_in or None,
-                    "check_out": check_out or None,
+                    "check_in": check_in,
+                    "check_out": check_out,
                     "reason": reason,
                     "expected_version": existing["version"] if existing else 0,
                 },
             )
+            st.session_state.notice = "Attendance saved with a record of your changes."
             st.rerun()

@@ -47,15 +47,19 @@ On Windows, the same `uv` commands work in PowerShell. On Linux, OpenCV may requ
 
 ## Enrollment and attendance
 
-1. Sign in as the administrator. In **System Settings**, set institution working days. Add departments, classes, courses and shifts in **Sessions & Schedules**.
-2. Use **Register Person** to save the person and category-specific fields. The same ID cannot be registered twice. Student and employee accounts are separate from application login accounts.
+The five main sections are **Home**, **People**, **Take attendance**, **Records** and **Settings**. Advanced administrative tools are grouped under Settings, and optional profile fields and report filters are collapsed.
+
+For a first test, use **Home → Create test profile**. This explicitly creates **Demo Student (DEMO-001)** and uses your existing login. Choose **Add my face**, record permission, then capture or upload three distinct photos. No consent, face images or attendance results are invented. If your face is already enrolled under another person, use that existing profile for testing; duplicate face identities are rejected. Demo records are labelled DEMO-001 in reports and can be deactivated through People when finished.
+
+1. Sign in as the administrator. Under **Settings → Working days & retention**, set institution working days. Add departments, classes, courses and shifts in **Settings → Schedules & organization**.
+2. Use **People → Add person** to save a name, ID and person type. Expand **Optional details** when needed. The same ID cannot be registered twice. Student and employee profiles are separate from application login accounts.
 3. Record informed consent or an authorized institutional basis. Minors require a guardian authorization reference. Explain retention, revocation and the manual attendance alternative before capture.
 4. Upload or capture 3–12 distinct images. Keep one person in each image and vary head angle and lighting slightly. The server rejects poor quality, inconsistent identities and possible duplicate enrollment. Uploaded enrollment images are processed in memory and are not retained. Re-enrollment replaces templates without changing attendance history.
-5. Create an attendance session with explicit dates, timezone, cutoff, grace period and assigned roster. Shift/class catalog entries label assignments; they do not silently create recurring sessions.
-6. Open **Live Recognition**, select an open session, prepare the camera, then press **START**. Recognized people must pass repeated matching observations. Unknown, ambiguous, poor-quality and inactive identities cannot create a new camera check-in.
-7. Review pending records in **Manual Corrections**. Verify a genuine check-in in person, or reject/correct it with a reason. Repeated recognition cannot create a second person/session record, and passing the camera again never checks anyone out.
+5. Open **Take attendance**, choose the people and check-in duration, then **Start attendance session**. For future sessions and detailed scheduling, use **Settings → Schedules & organization**. Shift/class catalog entries label assignments; they do not silently create recurring sessions.
+6. Select an open session and press **Start camera**. Allow browser camera access when prompted. Recognized people must pass repeated matching observations. Unknown, ambiguous, poor-quality and inactive identities cannot create a new camera check-in.
+7. Review pending records in **Records → Review & correct**. Verify a genuine check-in in person, or reject/correct it with a reason. Repeated recognition cannot create a second person/session record, and passing the camera again never checks anyone out.
 8. After the session ends, finalize it to produce absent, leave or holiday records for missing roster members. A missing record before finalization means attendance is unresolved.
-9. Use the category attendance views and **Reports** for dates, departments, classes, sections or individual people. CSV, Excel and PDF exports contain reporting metadata and no biometric vectors.
+9. Use **Records → Attendance history** to filter by dates, category, departments, classes, sections or individual people. CSV, Excel and PDF exports contain reporting metadata and no biometric vectors.
 
 Manual attendance and authorized checkout use the correction form, including a timezone-aware timestamp, reason and conflict check. Every change records its original and updated values. Leave/holiday changes do not silently rewrite existing records.
 

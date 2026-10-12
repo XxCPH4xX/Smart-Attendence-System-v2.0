@@ -7,7 +7,7 @@ from frontend.client import APIError
 
 def test_dashboard_pages_use_live_api_data(client, person, attendance_session, monkeypatch):
     import frontend.client as api
-    from frontend.views import administration, analytics, live, people, schedules
+    from frontend.views import administration, analytics, home, live, people, schedules
 
     def request(method, path, **kwargs):
         response = client.request(method, path, **kwargs)
@@ -19,7 +19,7 @@ def test_dashboard_pages_use_live_api_data(client, person, attendance_session, m
             return response.json()
         return response.content
 
-    for module in [api, administration, analytics, live, people, schedules]:
+    for module in [api, administration, analytics, home, live, people, schedules]:
         monkeypatch.setattr(module, "request", request)
     client.post(
         "/attendance/correct",
@@ -37,10 +37,55 @@ def test_dashboard_pages_use_live_api_data(client, person, attendance_session, m
     assert not app.exception
     assert not app.error
     pages = app.sidebar.radio[0].options
+    assert pages == ["Home", "People", "Take attendance", "Records", "Settings"]
     for page in pages:
         app.sidebar.radio[0].set_value(page).run()
         assert not app.exception, (page, app.exception)
         assert not app.error, (page, app.error)
+
+    # Administrative tools remain accessible without cluttering the main navigation.
+    tools = app.selectbox[0].options
+    for tool in tools:
+        app.selectbox[0].select(tool).run()
+        assert not app.exception, (tool, app.exception)
+        assert not app.error, (tool, app.error)
+
+    app.sidebar.radio[0].set_value("Home").run()
+    next(button for button in app.button if button.label == "Create test profile").click().run()
+    assert not app.exception
+    next(button for button in app.button if button.label == "Add my face").click().run()
+    assert app.sidebar.radio[0].value == "People"
+    assert app.radio[0].value == "Enroll a face"
+    agree = next(button for button in app.button if button.label == "Agree and continue")
+    assert not agree.disabled
+    agree.click().run()
+    assert app.error[0].value == "Confirm permission before continuing."
+    next(box for box in app.checkbox if "informed permission" in box.label).check().run()
+    next(button for button in app.button if button.label == "Agree and continue").click().run()
+    assert not app.exception
+    assert not app.error
+    assert next(button for button in app.button if button.label == "Save face and finish").disabled
+    demo = next(
+        p for p in client.get("/people").json()["items"] if p["institutional_id"] == "DEMO-001"
+    )
+    assert not demo["enrolled"]
+    assert len(client.get(f"/people/{demo['id']}/enrollments").json()["consents"]) == 1
+
+    # A demo session uses its own explicit roster, even with another session open.
+    app.session_state["quick_person_id"] = demo["id"]
+    app.session_state["new_attendance_session"] = True
+    app.sidebar.radio[0].set_value("Take attendance").run()
+    assert app.multiselect[0].value == [demo["id"]]
+    next(
+        button for button in app.button if button.label == "Start attendance session"
+    ).click().run()
+    assert not app.exception
+    assert not app.error
+    assert not app.toggle[0].value
+    assert any(button.label == "Start camera" for button in app.button)
+    session_id = app.session_state["preferred_session_id"]
+    assert client.get(f"/sessions/{session_id}/roster").json() == [demo["id"]]
+    assert app.selectbox[0].value == session_id
 
 
 def test_sign_in_form_renders():
