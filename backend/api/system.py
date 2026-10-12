@@ -1,0 +1,54 @@
+from fastapi import APIRouter, Depends, Query, Request
+from sqlalchemy import select
+
+from backend.auth import (
+    audit,
+    require,
+)
+from backend.db import get_db
+from backend.models import (
+    AuditLog,
+    Policy,
+)
+from backend.people import get_policy
+from backend.schemas import (
+    PolicyInput,
+)
+
+router = APIRouter()
+
+
+@router.get("/settings")
+def settings(request: Request, user=Depends(require("read")), db=Depends(get_db)):
+    return {
+        "policy": get_policy(db).model_dump(),
+        "institution": request.app.state.settings.institution,
+        "timezone": request.app.state.settings.timezone,
+        "device": request.app.state.settings.device,
+        "staff_verification_required": True,
+        "index_version": db.get(Policy, 1).index_version,
+    }
+
+
+@router.put("/settings")
+def update_settings(data: PolicyInput, user=Depends(require("settings")), db=Depends(get_db)):
+    policy = db.get(Policy, 1)
+    previous = policy.values
+    policy.values = data.model_dump()
+    policy.index_version += 1
+    audit(db, user, "settings_changed", "policy", 1, before=previous, after=policy.values)
+    db.commit()
+    return policy.values
+
+
+@router.get("/audit")
+def audit_logs(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    user=Depends(require("audit")),
+    db=Depends(get_db),
+):
+    entries = db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).offset(offset).limit(limit))
+    return [
+        {c.name: getattr(entry, c.name) for c in AuditLog.__table__.columns} for entry in entries
+    ]
