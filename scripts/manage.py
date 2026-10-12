@@ -11,6 +11,7 @@ from urllib.request import urlopen
 from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
+from pydantic import ValidationError
 from sqlalchemy import delete, select
 
 from backend.auth import audit, hasher
@@ -69,7 +70,14 @@ def account(reset=False):
     password = getpass.getpass("New password (at least 12 characters): ")
     if password != getpass.getpass("Confirm password: "):
         raise SystemExit("Passwords did not match")
-    validated = UserInput(username=username, password=password, role="super_admin")
+    try:
+        validated = UserInput(username=username, password=password, role="super_admin")
+    except ValidationError as error:
+        messages = [
+            f"{issue['loc'][0]}: {issue['msg']}"
+            for issue in error.errors(include_input=False, include_context=False)
+        ]
+        raise SystemExit("Account was not saved. " + "; ".join(messages)) from None
     engine = make_engine(settings.database_url)
     with session_factory(engine)() as db:
         user = db.scalar(select(User).where(User.username == username))
@@ -93,7 +101,11 @@ def account(reset=False):
                 raise SystemExit(
                     "An administrator already exists; create further accounts from User Management"
                 )
-            user = User(username=username, password_hash=hasher.hash(password), role="super_admin")
+            user = User(
+                username=validated.username,
+                password_hash=hasher.hash(validated.password),
+                role="super_admin",
+            )
             db.add(user)
             db.flush()
             audit(db, None, "initial_admin_created", "user", user.id)

@@ -1,8 +1,19 @@
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Annotated
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
+
+Password = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
 class Role(StrEnum):
@@ -31,23 +42,23 @@ class Status(StrEnum):
 
 
 class Input(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, hide_input_in_errors=True)
 
 
 class LoginInput(Input):
     username: str = Field(min_length=1, max_length=80)
-    password: str = Field(min_length=1, max_length=256)
+    password: Password = Field(min_length=1, max_length=256, repr=False)
 
 
 class UserInput(Input):
     username: str = Field(min_length=3, max_length=80, pattern=r"^[a-zA-Z0-9_.@-]+$")
-    password: str = Field(min_length=12, max_length=128)
+    password: Password = Field(min_length=12, max_length=128, repr=False)
     role: Role
 
 
 class PasswordInput(Input):
-    current_password: str
-    new_password: str = Field(min_length=12, max_length=128)
+    current_password: Password = Field(repr=False)
+    new_password: Password = Field(min_length=12, max_length=128, repr=False)
 
 
 class DetailsInput(Input):

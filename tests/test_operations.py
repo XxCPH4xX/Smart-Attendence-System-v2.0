@@ -26,3 +26,26 @@ def test_migrations_round_trip(tmp_path, monkeypatch):
         command.upgrade(config, "head")
     finally:
         get_settings.cache_clear()
+
+
+def test_invalid_cli_password_is_not_disclosed(monkeypatch, capsys):
+    import traceback
+
+    import pytest
+
+    from scripts import manage
+
+    password = "short-test"
+    monkeypatch.setattr("builtins.input", lambda prompt: "test_admin")
+    monkeypatch.setattr(manage.getpass, "getpass", lambda prompt: password)
+    monkeypatch.setattr(
+        manage, "make_engine", lambda url: pytest.fail("Invalid input must not open the database")
+    )
+    for reset in (False, True):
+        with pytest.raises(SystemExit) as caught:
+            manage.account(reset=reset)
+        assert "at least 12 characters" in str(caught.value)
+        assert "Account was not saved" in str(caught.value)
+        rendered = "".join(traceback.format_exception(caught.value))
+        output = capsys.readouterr()
+        assert password not in rendered + output.out + output.err

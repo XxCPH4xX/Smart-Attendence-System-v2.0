@@ -136,3 +136,47 @@ def test_password_change_invalidates_sessions(client):
         ).status_code
         == 200
     )
+
+
+def test_validation_response_does_not_disclose_password(client):
+    password = "short-test"
+    response = client.post(
+        "/users", json={"username": "test_admin", "password": password, "role": "admin"}
+    )
+    assert response.status_code == 422
+    assert password not in response.text
+    assert "at least 12 characters" in response.text
+    assert "input" not in response.json()["detail"][0]
+
+
+def test_password_whitespace_is_preserved_through_login_and_change(client):
+    password = "  exact password  "
+    assert (
+        client.post(
+            "/users", json={"username": "space_user", "password": password, "role": "viewer"}
+        ).status_code
+        == 201
+    )
+    assert (
+        client.post(
+            "/auth/login", json={"username": "space_user", "password": password.strip()}
+        ).status_code
+        == 401
+    )
+    login = client.post("/auth/login", json={"username": "space_user", "password": password})
+    assert login.status_code == 200
+    new_password = "  changed password  "
+    assert (
+        client.post(
+            "/auth/password",
+            headers={"Authorization": "Bearer " + login.json()["token"]},
+            json={"current_password": password, "new_password": new_password},
+        ).status_code
+        == 204
+    )
+    assert (
+        client.post(
+            "/auth/login", json={"username": "space_user", "password": new_password}
+        ).status_code
+        == 200
+    )

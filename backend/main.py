@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
@@ -52,6 +53,11 @@ def create_app(settings=None, engine=None):
     app.state.vision = vision
     app.add_middleware(BodyLimit)
     app.include_router(router)
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request, error):
+        details = [{key: issue[key] for key in ("loc", "msg", "type")} for issue in error.errors()]
+        return JSONResponse(status_code=422, content={"detail": details})
 
     @app.middleware("http")
     async def response_headers(request: Request, call_next):
