@@ -1,3 +1,5 @@
+import re
+
 import httpx
 import streamlit as st
 
@@ -6,6 +8,35 @@ from backend.config import get_settings
 
 class APIError(Exception):
     pass
+
+
+def validation_message(issue):
+    fields = [str(part) for part in issue.get("loc", [])[1:] if isinstance(part, str)]
+    field = fields[-1] if fields else ""
+    labels = {
+        "reason": "a reason",
+        "username": "a username",
+        "password": "a password",
+        "new_password": "a new password",
+        "institutional_id": "a student or employee ID",
+        "full_name": "a full name",
+        "email": "an email address",
+    }
+    label = labels.get(field, "the " + field.replace("_", " ") if field else "this field")
+    kind, message = issue.get("type", ""), issue.get("msg", "")
+    if kind in {"string_too_short", "string_too_long"}:
+        length = re.search(r"\b(\d+) characters?\b", message)
+        if length:
+            limit = "at least" if kind == "string_too_short" else "no more than"
+            return f"Please enter {label} with {limit} {length[1]} characters."
+    if kind == "missing":
+        return f"Please enter {label}."
+    if kind in {"enum", "literal_error"}:
+        return f"Please choose a valid value for {label}."
+    if kind in {"string_type", "string_pattern_mismatch", "int_parsing", "float_parsing"}:
+        return f"Please check the format of {label}."
+    message = message.removeprefix("Value error, ").replace("String should", "Text should")
+    return f"{field.replace('_', ' ').capitalize()}: {message}" if field else message
 
 
 def request(method, path, **kwargs):
@@ -26,9 +57,7 @@ def request(method, path, **kwargs):
         try:
             detail = response.json().get("detail", "Request failed")
             if isinstance(detail, list):
-                detail = "; ".join(
-                    f"{'.'.join(str(x) for x in d['loc'][1:])}: {d['msg']}" for d in detail
-                )
+                detail = " ".join(validation_message(issue) for issue in detail)
         except ValueError:
             detail = f"Request failed ({response.status_code})"
         raise APIError(str(detail))

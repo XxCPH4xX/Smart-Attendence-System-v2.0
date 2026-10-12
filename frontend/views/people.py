@@ -349,11 +349,14 @@ def directory():
                 st.success("Profile photo saved")
     if can("privacy"):
         with st.expander("Delete this person"):
-            reason = st.text_input("Deletion reason")
+            reason = st.text_input("Deletion reason", help="Enter at least 5 characters.")
             confirmation = st.text_input("Type the person's ID to confirm")
             if st.button("Delete person", disabled=confirmation != person["institutional_id"]):
-                request("DELETE", f"/people/{selected}", json={"reason": reason})
-                st.rerun()
+                if len(reason.strip()) < 5:
+                    st.error("Please enter a reason with at least 5 characters.")
+                else:
+                    request("DELETE", f"/people/{selected}", json={"reason": reason})
+                    st.rerun()
 
 
 def render():
