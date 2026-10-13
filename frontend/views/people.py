@@ -1,4 +1,3 @@
-import hashlib
 from datetime import date
 from zoneinfo import ZoneInfo
 
@@ -13,6 +12,7 @@ from frontend.controls import (
     reset_button,
     reset_section,
 )
+from frontend.face_photos import clear_photos, photo_editor
 from frontend.navigation import navigate, option_buttons, redirect
 
 
@@ -141,6 +141,8 @@ def enrollment(person):
             f"samples_{person_id}",
             f"replace_face_{person_id}",
             f"photo_source_{person_id}",
+            f"retake_{person_id}",
+            f"photo_notice_{person_id}",
         ),
     )
     st.subheader(person_label(person))
@@ -207,54 +209,8 @@ def enrollment(person):
         st.write(
             "Take one looking straight ahead, one slightly left, and one slightly right. Keep only your face in the picture."
         )
-        source = option_buttons(
-            "Photo source",
-            ["Use webcam", "Upload photos"],
-            key=f"photo_source_{person_id}",
-        )
-        capture_key = f"samples_{person_id}"
-        st.session_state.setdefault(capture_key, [])
-        generation = st.session_state.get(f"capture_generation_{person_id}", 0)
-        if source == "Upload photos":
-            files = st.file_uploader(
-                "Choose 3–12 different photos",
-                type=["jpg", "jpeg", "png"],
-                accept_multiple_files=True,
-                key=control_key(scope, f"uploads_{person_id}_{generation}"),
-            )
-            images = [(file.name, file.getvalue()) for file in files]
-        else:
-            capture = st.camera_input(
-                "Take a photo", key=control_key(scope, f"capture_{person_id}_{generation}")
-            )
-            if capture and st.button("Keep this photo", type="primary"):
-                content = capture.getvalue()
-                digest = hashlib.sha256(content).hexdigest()
-                saved = st.session_state[capture_key]
-                if digest in [hashlib.sha256(value).hexdigest() for _, value in saved]:
-                    st.warning("This photo is already saved. Take a new one.")
-                elif len(saved) >= 12:
-                    st.warning("You have enough photos. Finish enrollment below.")
-                else:
-                    result = request(
-                        "POST",
-                        "/vision/quality",
-                        files={"file": ("capture.jpg", content, "image/jpeg")},
-                    )
-                    if result["acceptable"]:
-                        saved.append((f"sample-{len(saved) + 1}.jpg", content))
-                        st.session_state[f"capture_generation_{person_id}"] = generation + 1
-                        st.rerun()
-                    else:
-                        st.warning(
-                            "; ".join(result["feedback"])
-                            or "No face found. Face the camera in good light."
-                        )
-            images = st.session_state[capture_key]
+        images = photo_editor(person_id)
         count = len(images)
-        st.progress(min(count / 3, 1), text=f"{count} of 3 required photos ready")
-        if images:
-            st.image([content for _, content in images], width=100)
         if st.button("Save face and finish", type="primary", disabled=not 3 <= count <= 12):
             with st.spinner("Checking your photos and saving the face template…"):
                 request(
@@ -263,14 +219,9 @@ def enrollment(person):
                     params={"consent_id": consents[-1]["id"]},
                     files=[("files", (name, content)) for name, content in images],
                 )
-            st.session_state[capture_key] = []
-            st.session_state[f"capture_generation_{person_id}"] = generation + 1
+            clear_photos(person_id)
             st.session_state[f"replace_face_{person_id}"] = False
             st.session_state.notice = "Face saved. You can now try attendance with the camera."
-            st.rerun()
-        if images and st.button("Start photos again"):
-            st.session_state[capture_key] = []
-            st.session_state[f"capture_generation_{person_id}"] = generation + 1
             st.rerun()
     with st.expander("Enrollment history and removal"):
         st.dataframe(history["enrollments"], use_container_width=True, hide_index=True)
@@ -284,7 +235,7 @@ def enrollment(person):
             )
             if st.button("Remove face data", disabled=not confirmed):
                 request("DELETE", f"/people/{person_id}/biometrics", json={"reason": reason})
-                st.session_state[f"samples_{person_id}"] = []
+                clear_photos(person_id)
                 st.session_state.pop(f"replace_face_{person_id}", None)
                 st.rerun()
 

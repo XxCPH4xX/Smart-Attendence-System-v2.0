@@ -11,6 +11,7 @@ from frontend.client import APIError
 @pytest.fixture
 def ui_api(client, monkeypatch):
     import frontend.client as api
+    from frontend import face_photos
     from frontend.views import administration, analytics, home, live, people, schedules
 
     def request(method, path, **kwargs):
@@ -23,7 +24,7 @@ def ui_api(client, monkeypatch):
             return response.json()
         return response.content
 
-    for module in [api, administration, analytics, home, live, people, schedules]:
+    for module in [api, face_photos, administration, analytics, home, live, people, schedules]:
         monkeypatch.setattr(module, "request", request)
     return request
 
