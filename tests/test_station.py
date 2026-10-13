@@ -163,7 +163,7 @@ def test_station_does_not_accept_unknown_or_unstable_faces(app, client, person, 
         assert db.scalar(select(func.count()).select_from(AttendanceRecord)) == 0
 
 
-def test_station_reconnects_after_backend_restart():
+def test_reset_or_expired_station_requires_explicit_restart():
     calls = []
 
     def respond(request):
@@ -177,10 +177,12 @@ def test_station_reconnects_after_backend_restart():
     processor.client = httpx.Client(
         base_url="http://localhost", transport=httpx.MockTransport(respond)
     )
-    assert processor.infer(np.zeros((160, 160, 3), np.uint8))["error"] is None
-    assert processor.stream_id == "new"
+    result = processor.infer(np.zeros((160, 160, 3), np.uint8))
+    assert result["stopped"]
+    assert "Start the station again" in result["error"]
+    assert processor.stream_id == "old"
     processor.close()
-    assert calls == ["/vision/streams/old/frame", "/station/start", "/vision/streams/new"]
+    assert calls == ["/vision/streams/old/frame", "/vision/streams/old"]
 
 
 def test_station_review_approval_is_present_not_midnight_late(app, client, person):

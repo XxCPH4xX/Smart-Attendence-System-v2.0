@@ -16,7 +16,12 @@ def enrolled_people(now):
         .join(FaceTemplate, FaceTemplate.person_id == Person.id)
         .join(Enrollment, Enrollment.id == FaceTemplate.enrollment_id)
         .join(Consent, Consent.id == Enrollment.consent_id)
-        .where(Person.active.is_(True), FaceTemplate.expires_at > now, Consent.revoked_at.is_(None))
+        .where(
+            Person.active.is_(True),
+            FaceTemplate.expires_at > now,
+            Consent.revoked_at.is_(None),
+            Person.is_minor.is_(False) | Consent.guardian.is_not(None),
+        )
         .distinct()
     )
 

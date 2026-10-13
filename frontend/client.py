@@ -49,7 +49,9 @@ def request(method, path, **kwargs):
         with httpx.Client(base_url=get_settings().api_url, headers=headers, timeout=120) as client:
             response = client.request(method, path, **kwargs)
     except httpx.HTTPError as error:
-        raise APIError("The backend is unavailable. Start uvicorn and try again.") from error
+        raise APIError(
+            "The backend is unavailable. Run ./run.sh in the project folder and try again."
+        ) from error
     if response.status_code == 401 and path != "/auth/login":
         clear_session()
         st.rerun()

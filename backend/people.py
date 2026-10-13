@@ -1,11 +1,12 @@
 from fastapi import HTTPException
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from backend.auth import audit
 from backend.db import utcnow
 from backend.models import (
     Catalog,
     Consent,
+    Enrollment,
     FaceTemplate,
     Person,
     PersonDetails,
@@ -39,6 +40,9 @@ def person_dict(db, person):
         "institutional_id": person.institutional_id,
         "full_name": person.full_name,
         "category": person.category,
+        "custom_type": person.custom_type,
+        "person_type": person.custom_type or person.category.title(),
+        "age": person.age,
         "email": person.email,
         "phone": person.phone,
         "department_id": person.department_id,
@@ -56,7 +60,14 @@ def person_dict(db, person):
         "enrolled": bool(
             db.scalar(
                 select(FaceTemplate.id)
-                .where(FaceTemplate.person_id == person.id, FaceTemplate.expires_at > utcnow())
+                .join(Enrollment, Enrollment.id == FaceTemplate.enrollment_id)
+                .join(Consent, Consent.id == Enrollment.consent_id)
+                .where(
+                    FaceTemplate.person_id == person.id,
+                    FaceTemplate.expires_at > utcnow(),
+                    Consent.revoked_at.is_(None),
+                    Consent.guardian.is_not(None) if person.is_minor else True,
+                )
                 .limit(1)
             )
         ),
@@ -75,6 +86,13 @@ def save_person(db, user, data, person=None):
             409, "Category is immutable; archive and register a new category record"
         )
     fields = data.model_dump(exclude={"details"}, mode="python")
+    if data.custom_type:
+        existing_type = db.scalar(
+            select(Person.custom_type)
+            .where(func.lower(Person.custom_type) == data.custom_type.lower())
+            .limit(1)
+        )
+        fields["custom_type"] = existing_type or data.custom_type
     if not person:
         person = Person(**fields)
         db.add(person)
@@ -99,6 +117,13 @@ def save_person(db, user, data, person=None):
     )
     db.commit()
     return person
+
+
+def type_condition(label):
+    category = label.lower()
+    if category in {"student", "teacher", "staff", "other"}:
+        return (Person.category == category) & Person.custom_type.is_(None)
+    return func.lower(Person.custom_type) == category
 
 
 def clear_biometrics(db, person_id):

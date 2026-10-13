@@ -5,6 +5,7 @@ from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 from backend.config import get_settings
 from backend.db import utcnow
+from frontend.attendance_actions import delete_attendance, undo_button
 from frontend.client import can, request
 from frontend.controls import control_key, reset_button
 from vision.camera import RemoteProcessor
@@ -60,12 +61,12 @@ def station_settings(policy):
 
 def stop_stream():
     processor = st.session_state.pop("processor", None)
+    stream_id = st.session_state.pop("stream_id", None)
+    st.session_state.pop("was_playing", None)
     if processor:
         processor.close()
-    elif st.session_state.get("stream_id"):
-        request("DELETE", f"/vision/streams/{st.session_state.stream_id}")
-    st.session_state.pop("stream_id", None)
-    st.session_state.pop("was_playing", None)
+    elif stream_id:
+        request("DELETE", f"/vision/streams/{stream_id}")
 
 
 def render():
@@ -106,6 +107,17 @@ def render():
         else:
             selected = None
     station = request("GET", "/station")
+    session_id = selected if scheduled else (station["session"] or {}).get("id")
+    day = sessions[selected]["local_date"] if scheduled and selected else station["date"]
+    if can("delete_attendance"):
+        st.button(
+            "Reset session attendance" if scheduled else "Reset today's attendance",
+            on_click=delete_attendance,
+            kwargs={"params": {"start": day, "end": day, "session_id": session_id}},
+            disabled=session_id is None,
+            help="Clear this session's check-ins and stop its cameras. People and saved faces stay available.",
+        )
+        undo_button()
     if not scheduled:
         count = station["enrolled_people"]
         st.caption(
@@ -187,6 +199,10 @@ def render():
                     st.info("Connecting camera… Allow access when your browser asks.")
                     return
                 result = processor.snapshot()
+                if result.get("stopped"):
+                    stop_stream()
+                    st.session_state.notice = result["error"]
+                    st.rerun()
                 if result.get("error"):
                     st.error(result["error"])
                     return
@@ -226,7 +242,7 @@ def render():
                     {
                         "Name": row["full_name"],
                         "ID": row["institutional_id"],
-                        "Type": row["category"].title(),
+                        "Type": row["person_type"],
                         "Status": row["status"].replace("_", " ").title(),
                         "Check-in": datetime.fromisoformat(row["check_in"]).strftime("%I:%M:%S %p")
                         if row["check_in"]

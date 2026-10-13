@@ -104,6 +104,7 @@ class VisionService:
                 FaceTemplate.expires_at > utcnow(),
                 FaceTemplate.model_version == MODEL_VERSION,
                 Consent.revoked_at.is_(None),
+                Person.is_minor.is_(False) | Consent.guardian.is_not(None),
             )
         ).all()
         vectors, labels = [], []
@@ -148,7 +149,7 @@ class VisionService:
                         result.update(
                             person_id=person.id,
                             name=person.full_name,
-                            label=f"{person.category.title()} | {person.institutional_id}",
+                            label=f"{person.custom_type or person.category.title()} | {person.institutional_id}",
                             feedback="Recognized; waiting for stable observations",
                         )
                 else:
@@ -313,6 +314,14 @@ class VisionService:
         with self.stream_lock:
             if key in self.streams and self.streams[key]["user_id"] == user.id:
                 del self.streams[key]
+
+    def stop_sessions(self, session_ids):
+        with self.stream_lock:
+            self.streams = {
+                key: stream
+                for key, stream in self.streams.items()
+                if stream["session_id"] not in session_ids
+            }
 
     def close(self):
         with self.lock:

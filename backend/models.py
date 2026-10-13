@@ -55,6 +55,8 @@ class Person(Base):
     institutional_id: Mapped[str] = mapped_column(String(80), unique=True)
     full_name: Mapped[str] = mapped_column(String(160), index=True)
     category: Mapped[str] = mapped_column(String(20), index=True)
+    custom_type: Mapped[str | None] = mapped_column(String(80))
+    age: Mapped[int | None]
     email: Mapped[str | None] = mapped_column(String(254))
     phone: Mapped[str | None] = mapped_column(String(40))
     department_id: Mapped[int | None] = mapped_column(ForeignKey("catalog.id"))
@@ -196,6 +198,16 @@ class AttendanceEvent(Base):
     action: Mapped[str] = mapped_column(String(30))
     reason: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+
+
+class AttendanceDeletion(Base):
+    __tablename__ = "attendance_deletions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    actor_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    records: Mapped[list] = mapped_column(JSON)
+    reason: Mapped[str] = mapped_column(String(160))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
+    restored_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class AuditLog(Base):

@@ -14,10 +14,12 @@ from cryptography.fernet import Fernet
 from pydantic import ValidationError
 from sqlalchemy import delete, select
 
+from backend.attendance_deletions import RECOVERY_DAYS
 from backend.auth import audit, hasher
 from backend.config import get_settings
 from backend.db import make_engine, session_factory, utcnow
 from backend.models import (
+    AttendanceDeletion,
     AttendanceRecord,
     AttendanceSession,
     FaceTemplate,
@@ -176,8 +178,16 @@ def retention(apply=False):
             db.scalars(select(AttendanceSession.id).where(AttendanceSession.ends_at < cutoff))
         )
         leaves = list(db.scalars(select(Leave.id).where(Leave.ends_on < cutoff.date())))
+        deletions = list(
+            db.scalars(
+                select(AttendanceDeletion.id).where(
+                    AttendanceDeletion.created_at < now - timedelta(days=RECOVERY_DAYS)
+                )
+            )
+        )
         print(
-            f"Expired: {len(templates)} templates, {len(sessions)} sessions, {len(leaves)} leave records."
+            f"Expired: {len(templates)} templates, {len(sessions)} sessions, "
+            f"{len(leaves)} leave records, {len(deletions)} attendance recovery groups."
         )
         if not apply:
             print("Dry run. Use purge-expired --apply to delete these records permanently.")
@@ -188,6 +198,7 @@ def retention(apply=False):
         db.execute(delete(SessionMember).where(SessionMember.session_id.in_(sessions)))
         db.execute(delete(AttendanceSession).where(AttendanceSession.id.in_(sessions)))
         db.execute(delete(Leave).where(Leave.id.in_(leaves)))
+        db.execute(delete(AttendanceDeletion).where(AttendanceDeletion.id.in_(deletions)))
         db.execute(delete(LoginSession).where(LoginSession.expires_at < now))
         bump_index(db)
         audit(
@@ -196,7 +207,12 @@ def retention(apply=False):
             "retention_purge",
             "database",
             "retention",
-            after={"templates": len(templates), "sessions": len(sessions), "leaves": len(leaves)},
+            after={
+                "templates": len(templates),
+                "sessions": len(sessions),
+                "leaves": len(leaves),
+                "attendance_recovery_groups": len(deletions),
+            },
         )
         db.commit()
     engine.dispose()

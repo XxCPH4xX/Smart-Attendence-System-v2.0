@@ -78,6 +78,8 @@ class PersonInput(Input):
     institutional_id: str = Field(min_length=1, max_length=80, pattern=r"^[\w.-]+$")
     full_name: str = Field(min_length=2, max_length=160)
     category: Category
+    custom_type: str | None = Field(default=None, min_length=1, max_length=80)
+    age: int | None = Field(default=None, ge=0, le=120, strict=True)
     email: EmailStr | None = None
     phone: str | None = Field(default=None, max_length=40)
     department_id: int | None = None
@@ -89,6 +91,15 @@ class PersonInput(Input):
 
     @model_validator(mode="after")
     def category_fields(self):
+        if self.age is not None:
+            self.is_minor = self.age < 18
+        if self.custom_type:
+            if self.custom_type.casefold() in {"all", "custom type…"}:
+                raise ValueError("Choose a person type name other than All or Custom type…")
+            if self.category != Category.OTHER:
+                raise ValueError("Custom person types use the Other category")
+            if self.custom_type.casefold() in {c.value for c in Category}:
+                raise ValueError("Choose the existing person type instead of adding it again")
         d = self.details
         if self.category == Category.STUDENT:
             if d.employee_id or d.designation or d.shift_id:
@@ -206,6 +217,11 @@ class PolicyInput(Input):
 
 class ReasonInput(Input):
     reason: str = Field(min_length=5, max_length=2000)
+
+
+class AttendanceDeleteInput(Input):
+    expected_version: int = Field(ge=1)
+    expected_updated_at: datetime
 
 
 class CatalogInput(Input):

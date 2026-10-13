@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from backend.db import utcnow
 from backend.models import AttendanceRecord, AttendanceSession, Catalog, Person, PersonDetails
+from backend.people import type_condition
 
 COLUMNS = [
     "record_id",
@@ -22,6 +23,7 @@ COLUMNS = [
     "institutional_id",
     "full_name",
     "category",
+    "person_type",
     "department",
     "status",
     "check_in",
@@ -40,6 +42,8 @@ def report_rows(
     person_id=None,
     class_id=None,
     section=None,
+    person_type=None,
+    session_id=None,
 ):
     query = (
         select(AttendanceRecord, AttendanceSession, Person, Catalog.name)
@@ -49,6 +53,10 @@ def report_rows(
         .outerjoin(PersonDetails, PersonDetails.person_id == Person.id)
         .where(AttendanceSession.local_date >= start, AttendanceSession.local_date <= end)
     )
+    if person_type:
+        query = query.where(type_condition(person_type))
+    if session_id is not None:
+        query = query.where(AttendanceSession.id == session_id)
     for condition, value in [
         (Person.category == category, category),
         (Person.department_id == department_id, department_id),
@@ -73,6 +81,7 @@ def report_rows(
                 "institutional_id": person.institutional_id,
                 "full_name": person.full_name,
                 "category": person.category,
+                "person_type": person.custom_type or person.category.title(),
                 "department": department or "Unassigned",
                 "status": record.status,
                 "check_in": record.check_in.astimezone(zone).isoformat() if record.check_in else "",
@@ -81,6 +90,7 @@ def report_rows(
                 else "",
                 "verification": record.verification,
                 "version": record.version,
+                "updated_at": record.updated_at.isoformat(),
             }
         )
     return rows
@@ -131,7 +141,7 @@ def export_report(rows, kind, institution, filters):
         Paragraph("Generated (UTC): " + generated, styles["Normal"]),
         Spacer(1, 12),
     ]
-    columns = ["date", "session", "institutional_id", "full_name", "category", "status"]
+    columns = ["date", "session", "institutional_id", "full_name", "person_type", "status"]
     cells = [[Paragraph(c.replace("_", " ").title(), styles["Normal"]) for c in columns]]
     cells += [[Paragraph(escape(str(row[c])), styles["Normal"]) for c in columns] for row in rows]
     table = LongTable(cells, repeatRows=1, colWidths=[70, 140, 100, 165, 85, 130])

@@ -11,7 +11,7 @@ from frontend.client import APIError
 @pytest.fixture
 def ui_api(client, monkeypatch):
     import frontend.client as api
-    from frontend import face_photos
+    from frontend import attendance_actions, face_photos
     from frontend.views import administration, analytics, home, live, people, schedules
 
     def request(method, path, **kwargs):
@@ -24,7 +24,17 @@ def ui_api(client, monkeypatch):
             return response.json()
         return response.content
 
-    for module in [api, face_photos, administration, analytics, home, live, people, schedules]:
+    for module in [
+        api,
+        attendance_actions,
+        face_photos,
+        administration,
+        analytics,
+        home,
+        live,
+        people,
+        schedules,
+    ]:
         monkeypatch.setattr(module, "request", request)
     return request
 
@@ -118,6 +128,99 @@ def test_sign_in_form_renders():
     assert not app.exception
     assert len(app.text_input) == 2
     assert app.text_input[1].label == "Password"
+
+
+def test_records_delete_reset_undo_and_counters(
+    client, person, attendance_session, session_payload, ui_api
+):
+    from test_attendance_deletions import period, record_arrival
+
+    second = client.post("/sessions", json={**session_payload, "name": "Second class"}).json()
+    for session in (attendance_session, second):
+        record_arrival(client, session, person)
+    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
+    ui.session_state["token"] = "test-session"
+    ui.session_state["page"] = "Records"
+    ui.run()
+    buttons = [button for button in ui.button if button.label == "Delete record"]
+    assert len(buttons) == 2
+    buttons[0].click().run()
+    assert not ui.exception and not ui.error
+    assert len([button for button in ui.button if button.label == "Delete record"]) == 1
+    next(button for button in ui.button if button.label == "Reset attendance").click().run()
+    assert not ui.exception and not ui.error
+    assert client.get("/attendance", params=period(attendance_session)).json() == []
+    assert (
+        next(metric for metric in ui.metric if metric.label == "Recorded attendance rate").value
+        == "0.0%"
+    )
+    assert next(button for button in ui.button if button.label == "Reset attendance").disabled
+    assert not any(button.label == "Delete record" for button in ui.button)
+    next(
+        button for button in ui.button if button.label == "Undo last attendance reset or deletion"
+    ).click().run()
+    assert not ui.exception and not ui.error
+    assert (
+        next(metric for metric in ui.metric if metric.label == "Recorded attendance rate").value
+        == "100.0%"
+    )
+    next(button for button in ui.button if button.label == "Reset attendance").click().run()
+    next(button for button in ui.sidebar.button if button.label == "Home").click().run()
+    assert {metric.label: metric.value for metric in ui.metric} == {
+        "People registered": "1",
+        "Checked in": "0",
+        "Waiting for review": "0",
+    }
+
+
+def test_live_reset_stops_camera_and_clears_today(client, person, app, ui_api):
+    from test_attendance_deletions import record_arrival
+    from test_station import enroll_fixture
+
+    enroll_fixture(app, person["id"])
+    app.state.vision.load = Mock()
+    stream = client.post("/station/start").json()
+    station = client.get("/station").json()["session"]
+    record_arrival(client, station, person)
+    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
+    ui.session_state["token"] = "test-session"
+    ui.session_state["page"] = "Take attendance"
+    ui.run()
+    assert next(metric for metric in ui.metric if metric.label == "Checked in today").value == "1"
+    next(button for button in ui.button if button.label == "Reset today's attendance").click().run()
+    assert not ui.exception and not ui.error
+    assert next(metric for metric in ui.metric if metric.label == "Checked in today").value == "0"
+    assert next(metric for metric in ui.metric if metric.label == "Waiting for review").value == "0"
+    assert stream["stream_id"] not in app.state.vision.streams
+    assert client.get("/station").json()["enrolled_people"] == 1
+    assert next(button for button in ui.button if button.label == "Start attendance station")
+
+
+def test_custom_person_and_age_form(client, ui_api):
+    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
+    ui.session_state["token"] = "test-session"
+    ui.session_state["page"] = "People"
+    ui.session_state["people_action"] = "Add person"
+    ui.run()
+    assert not any(box.label == "This person is under 18" for box in ui.checkbox)
+    next(field for field in ui.selectbox if field.label == "Person type").set_value(
+        "Custom type…"
+    ).run()
+    next(field for field in ui.text_input if field.label == "Custom person type").set_value(
+        "Contractor"
+    ).run()
+    next(field for field in ui.text_input if field.label == "Full name").set_value(
+        "Test Contractor"
+    )
+    next(field for field in ui.text_input if field.label == "Student or employee ID").set_value(
+        "CONT-1"
+    )
+    next(field for field in ui.number_input if field.label == "Age (years)").set_value(25)
+    next(button for button in ui.button if button.label == "Save and add face").click().run()
+    assert not ui.exception and not ui.error
+    saved = client.get("/people", params={"q": "CONT-1"}).json()["items"][0]
+    assert saved["age"] == 25 and saved["person_type"] == "Contractor"
+    assert not saved["is_minor"]
 
 
 @pytest.mark.parametrize("role", ["super_admin", "admin", "teacher", "staff_operator", "viewer"])
@@ -320,8 +423,8 @@ def test_reset_filters_and_station_settings(client, person, ui_api):
     next(field for field in ui.selectbox if field.label == "Show attendance for").set_value(
         "Custom dates"
     ).run()
-    next(field for field in ui.selectbox if field.label == "Category").set_value("staff").run()
-    next(button for button in ui.button if button.label == "Reset filters").click().run()
+    next(field for field in ui.selectbox if field.label == "Category").set_value("Staff").run()
+    next(button for button in ui.button if button.label == "Clear filters").click().run()
     assert (
         next(field for field in ui.selectbox if field.label == "Show attendance for").value
         == "Today"

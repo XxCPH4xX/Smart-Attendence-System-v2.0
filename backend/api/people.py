@@ -18,7 +18,14 @@ from backend.models import (
     ProfilePhoto,
     SessionMember,
 )
-from backend.people import bump_index, clear_biometrics, person_dict, revoke_biometrics, save_person
+from backend.people import (
+    bump_index,
+    clear_biometrics,
+    person_dict,
+    revoke_biometrics,
+    save_person,
+    type_condition,
+)
 from backend.schemas import ConsentInput, PersonInput, ReasonInput
 
 router = APIRouter()
@@ -28,6 +35,7 @@ router = APIRouter()
 def people(
     q: str = "",
     category: str | None = None,
+    person_type: str | None = None,
     department_id: int | None = None,
     class_id: int | None = None,
     section: str | None = None,
@@ -39,6 +47,8 @@ def people(
     db=Depends(get_db),
 ):
     query = select(Person).join(PersonDetails)
+    if person_type:
+        query = query.where(type_condition(person_type))
     if q:
         query = query.where(
             Person.full_name.icontains(q, autoescape=True)
@@ -64,6 +74,17 @@ def people(
 @router.post("/people", status_code=201)
 def add_person(data: PersonInput, user=Depends(require("people")), db=Depends(get_db)):
     return person_dict(db, save_person(db, user, data))
+
+
+@router.get("/people/types")
+def person_types(user=Depends(require("read")), db=Depends(get_db)):
+    custom = db.scalars(
+        select(Person.custom_type)
+        .where(Person.custom_type.is_not(None))
+        .distinct()
+        .order_by(Person.custom_type)
+    ).all()
+    return ["Student", "Teacher", "Staff", "Other", *custom]
 
 
 @router.get("/people/{person_id}")

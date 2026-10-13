@@ -23,15 +23,31 @@ def person_form(person=None):
     details = person.get("details", {})
     catalog = request("GET", "/catalog")
     config = request("GET", "/settings")
-    categories = ["student", "teacher", "staff", "other"]
-    category = st.selectbox(
+    types = request("GET", "/people/types")
+    selected_type = person.get("person_type", "Student")
+    choices = [*types, "Custom type…"]
+    if person.get("category") == "other":
+        choices = [choice for choice in choices if choice not in {"Student", "Teacher", "Staff"}]
+    selected_type = st.selectbox(
         "Person type",
-        categories,
-        format_func=str.title,
-        index=categories.index(person.get("category", "student")),
-        disabled=bool(person),
+        choices,
+        index=choices.index(selected_type),
+        disabled=bool(person) and person.get("category") != "other",
         key=control_key(scope, "category"),
     )
+    custom_type = None
+    if selected_type == "Custom type…":
+        custom_type = st.text_input(
+            "Custom person type",
+            placeholder="For example: Contractor or Visitor",
+            max_chars=80,
+            key=control_key(scope, "custom_type"),
+        )
+        category = "other"
+    elif selected_type in {"Student", "Teacher", "Staff", "Other"}:
+        category = selected_type.lower()
+    else:
+        category, custom_type = "other", selected_type
 
     def catalog_select(label, kind, selected):
         options = {None: "Not set", **{c["id"]: c["name"] for c in catalog if c["kind"] == kind}}
@@ -51,7 +67,14 @@ def person_form(person=None):
             max_chars=80,
             help="A unique ID, such as STU-1001.",
         )
-        minor = st.checkbox("This person is under 18", person.get("is_minor", False))
+        age = st.number_input(
+            "Age (years)",
+            min_value=0,
+            max_value=120,
+            value=person.get("age"),
+            step=1,
+            help="People under 18 require guardian authorization before face enrollment.",
+        )
         with st.expander("Optional details"):
             a, b = st.columns(2)
             with a:
@@ -109,16 +132,24 @@ def person_form(person=None):
         if not name.strip() or not institutional_id.strip():
             st.error("Enter a full name and a unique ID to continue.")
             return None
+        if age is None:
+            st.error("Enter this person's age to continue.")
+            return None
+        if selected_type == "Custom type…" and not custom_type.strip():
+            st.error("Enter a custom person type to continue.")
+            return None
         data = dict(
             institutional_id=institutional_id,
             full_name=name,
             category=category,
+            custom_type=custom_type,
+            age=age,
             email=email or None,
             phone=phone or None,
             department_id=department,
             active=active,
             joined_on=joined.isoformat(),
-            is_minor=minor,
+            is_minor=age < 18,
             notes=notes,
             details=specific,
         )
@@ -256,13 +287,12 @@ def directory():
     )
     category = b.selectbox(
         "Person type",
-        ["All", "student", "teacher", "staff", "other"],
-        format_func=str.title,
+        ["All", *request("GET", "/people/types")],
         key=control_key(scope, "category"),
     )
     params = dict(q=q, limit=25)
     if category != "All":
-        params["category"] = category
+        params["person_type"] = category
     with st.expander("More filters"):
         catalog = request("GET", "/catalog")
         state = st.selectbox(
@@ -308,7 +338,7 @@ def directory():
             {
                 "Name": p["full_name"],
                 "ID": p["institutional_id"],
-                "Type": p["category"].title(),
+                "Type": p["person_type"],
                 "Status": "Registered" if p["active"] else "Removed",
                 "Face": "Ready" if p["enrolled"] else "Not added",
             }
@@ -338,7 +368,11 @@ def directory():
     if can("people") and not person["active"]:
         st.info("This person has been removed. Their past records remain available.")
         if st.button("Restore person"):
-            data = {key: value for key, value in person.items() if key not in {"id", "enrolled"}}
+            data = {
+                key: value
+                for key, value in person.items()
+                if key not in {"id", "enrolled", "person_type"}
+            }
             request("PUT", f"/people/{selected}", json={**data, "active": True})
             st.session_state.notice = (
                 "Person restored. Add their face again to use camera attendance."

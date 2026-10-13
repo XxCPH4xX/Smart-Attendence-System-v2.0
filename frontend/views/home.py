@@ -76,7 +76,7 @@ def render():
     totals = summary["attendance"]
     a, b, c = st.columns(3)
     a.metric("People registered", sum(summary["people"].values()))
-    b.metric("Checked in", totals.get("present", 0) + totals.get("late", 0))
+    b.metric("Checked in", summary["checked_in_people"])
     c.metric("Waiting for review", totals.get("pending_verification", 0))
     st.caption(
         "The daily station marks enrolled people automatically. Scheduled sessions can require review."
