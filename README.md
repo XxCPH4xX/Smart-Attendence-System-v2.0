@@ -31,19 +31,17 @@ uv run attendance check-models
 
 To customize configuration, consult `.env.example` and add variables to the generated `.env`; do not replace its key. SQLite is the default. PostgreSQL uses a URL such as `postgresql+psycopg://user:password@localhost/attendance`; set it before initialization. Restrict database access to the application operator.
 
-Start two terminals:
+After installation, start the app with one command:
 
 ```bash
-uv run uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
+./run.sh
 ```
 
-```bash
-uv run streamlit run frontend/app.py
-```
+The launcher starts the backend and dashboard together. Keep the terminal open and press **Ctrl+C** to stop both. If a service is already running, it is reused and left running when the launcher exits. On Windows, use `uv run python -m scripts.run_local` instead.
 
 Open [the dashboard](http://127.0.0.1:8501). The [API reference](http://127.0.0.1:8000/docs) documents individual endpoints and their authentication requirements. Run one API worker: camera tracking and inference are process-local. Daily stations reconnect to the backend after an expired stream or service restart. A browser/device disconnect still requires starting the station again. Login expiry requires signing in again.
 
-On Windows, the same `uv` commands work in PowerShell. On Linux, OpenCV may require distribution packages for `libGL` and `libglib2.0`. macOS users must grant their browser camera access in System Settings → Privacy & Security → Camera. Camera access belongs to the browser, not the backend Python process. For localhost, no TURN server is needed. Remote WebRTC hosting, HTTPS and TURN deployment are outside the local installation.
+The installation commands also work in PowerShell on Windows. On Linux, OpenCV may require distribution packages for `libGL` and `libglib2.0`. macOS users must grant their browser camera access in System Settings → Privacy & Security → Camera. Camera access belongs to the browser, not the backend Python process. For localhost, no TURN server is needed. Remote WebRTC hosting, HTTPS and TURN deployment are outside the local installation.
 
 ## Enrollment and attendance
 
