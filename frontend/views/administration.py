@@ -1,16 +1,25 @@
 import streamlit as st
 
 from frontend.client import clear_session, request
+from frontend.controls import control_key, reset_button
 
 
 def users():
+    reset_button("users", label="Reset account form")
     accounts = request("GET", "/users")
     st.dataframe(
-        [{k: u[k] for k in ["id", "username", "role", "active"]} for u in accounts],
+        [
+            {
+                "Username": u["username"],
+                "Role": u["role"],
+                "Sign-in access": "Allowed" if u["active"] else "Removed",
+            }
+            for u in accounts
+        ],
         hide_index=True,
         use_container_width=True,
     )
-    with st.form("new_user"):
+    with st.form(control_key("users", "new_user")):
         username = st.text_input("New username")
         password = st.text_input("Initial password (at least 12 characters)", type="password")
         role = st.selectbox("Role", ["viewer", "teacher", "staff_operator", "admin", "super_admin"])
@@ -19,8 +28,16 @@ def users():
                 "POST", "/users", json={"username": username, "password": password, "role": role}
             )
             st.rerun()
-    selected = st.selectbox("Manage account", accounts, format_func=lambda u: u["username"])
-    if st.button("Disable account" if selected["active"] else "Reactivate account"):
+    selected = st.selectbox(
+        "Manage account",
+        accounts,
+        format_func=lambda u: u["username"],
+        key=control_key("users", "selected"),
+    )
+    st.caption(
+        "Removing login access signs this account out and prevents future sign-ins. Past changes remain in the change history."
+    )
+    if st.button("Remove login access" if selected["active"] else "Restore login access"):
         request("PATCH", f"/users/{selected['id']}", params={"active": not selected["active"]})
         st.rerun()
     st.caption(
@@ -29,7 +46,8 @@ def users():
 
 
 def account():
-    with st.form("password"):
+    reset_button("account", label="Reset password form")
+    with st.form(control_key("account", "password")):
         current = st.text_input("Current password", type="password")
         new = st.text_input("New password (at least 12 characters)", type="password")
         repeat = st.text_input("Confirm new password", type="password")
@@ -47,7 +65,10 @@ def account():
 
 
 def audit():
-    page = st.number_input("Audit page", min_value=1, value=1, step=1)
+    reset_button("audit", label="Reset filters")
+    page = st.number_input(
+        "Audit page", min_value=1, value=1, step=1, key=control_key("audit", "page")
+    )
     rows = request("GET", "/audit", params={"offset": (page - 1) * 100, "limit": 100})
     st.dataframe(rows, use_container_width=True, hide_index=True)
     if rows:
@@ -55,11 +76,14 @@ def audit():
             "Inspect change",
             rows,
             format_func=lambda r: f"#{r['id']} · {r['action']} · {r['created_at']}",
+            key=control_key("audit", "entry"),
         )
         st.json(entry)
 
 
 def settings(system=False):
+    scope = "system_policy" if system else "recognition_settings"
+    reset_button(scope, label="Reset unsaved changes")
     config = request("GET", "/settings")
     policy = dict(config["policy"])
     st.caption(f"{config['institution']} · {config['timezone']} · {config['device'].upper()}")
@@ -67,7 +91,7 @@ def settings(system=False):
         st.info(
             "Institution name, timezone and compute device are environment settings. Edit .env and restart the services to apply them. Existing sessions retain their own timezone."
         )
-        with st.form("system_policy"):
+        with st.form(control_key(scope, "form")):
             days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
             policy["working_days"] = st.multiselect(
                 "Institution working days",
@@ -101,7 +125,7 @@ def settings(system=False):
         st.warning(
             "Similarity scores are not probabilities. The default threshold is provisional until evaluated on authorized local data. Daily station marking and staff review can be configured on Take attendance. Face matching does not prove liveness."
         )
-        with st.form("recognition_settings"):
+        with st.form(control_key(scope, "form")):
             a, b = st.columns(2)
             with a:
                 policy["similarity_threshold"] = st.slider(

@@ -7,6 +7,8 @@ import streamlit as st
 
 from backend.db import utcnow
 from frontend.client import can, people_options, person_label, request
+from frontend.controls import control_key, delete_person_button, people_table, reset_button
+from frontend.navigation import navigate
 
 COLORS = {
     "present": "#246B5B",
@@ -76,7 +78,9 @@ def trends(rows):
         ),
         use_container_width=True,
     )
-    frequency = st.radio("Trend interval", ["Weekly", "Monthly"], horizontal=True)
+    frequency = st.selectbox(
+        "Trend interval", ["Weekly", "Monthly"], key=control_key("history", "trend")
+    )
     frame["period"] = (
         pd.to_datetime(frame["date"])
         .dt.to_period("W" if frequency == "Weekly" else "M")
@@ -98,10 +102,14 @@ def trends(rows):
 
 
 def history(category=None, export=False):
+    scope = "history"
+    reset_button(scope, label="Reset filters")
     config = request("GET", "/settings")
     today = utcnow().astimezone(ZoneInfo(config["timezone"])).date()
     period = st.selectbox(
-        "Show attendance for", ["Today", "This week", "This month", "Custom dates"]
+        "Show attendance for",
+        ["Today", "This week", "This month", "Custom dates"],
+        key=control_key(scope, "period"),
     )
     start = (
         today
@@ -113,13 +121,17 @@ def history(category=None, export=False):
     end = today
     if period == "Custom dates":
         a, b = st.columns(2)
-        start = a.date_input("From", today.replace(day=1))
-        end = b.date_input("Through", today)
+        start = a.date_input("From", today.replace(day=1), key=control_key(scope, "start"))
+        end = b.date_input("Through", today, key=control_key(scope, "end"))
     params = {"start": start.isoformat(), "end": end.isoformat()}
     if category:
         params["category"] = category
     else:
-        selected = st.selectbox("Category", ["All", "student", "teacher", "staff", "other"])
+        selected = st.selectbox(
+            "Category",
+            ["All", "student", "teacher", "staff", "other"],
+            key=control_key(scope, "category"),
+        )
         if selected != "All":
             params["category"] = selected
     with st.expander("Filter by person, department or class"):
@@ -133,7 +145,7 @@ def history(category=None, export=False):
             "Department",
             list(departments),
             format_func=departments.get,
-            key=f"history_department_{category}",
+            key=control_key(scope, "department"),
         )
         classes = {
             None: "All classes",
@@ -143,9 +155,9 @@ def history(category=None, export=False):
             "Class / program",
             list(classes),
             format_func=classes.get,
-            key=f"history_class_{category}",
+            key=control_key(scope, "class"),
         )
-        section = c.text_input("Section")
+        section = c.text_input("Section", key=control_key(scope, "section"))
         for key, value in [
             ("department_id", department),
             ("class_id", class_id),
@@ -158,6 +170,7 @@ def history(category=None, export=False):
             "Individual",
             [None, *options],
             format_func=lambda i: "All people" if i is None else person_label(options[i]),
+            key=control_key(scope, "individual"),
         )
         if selected_person:
             params["person_id"] = selected_person
@@ -179,21 +192,31 @@ def history(category=None, export=False):
         }
         for row in rows
     ]
-    st.dataframe(display_rows, hide_index=True, use_container_width=True)
+    row_ids = [row["person_id"] for row in rows]
+    people = {i: options[i] for i in dict.fromkeys(row_ids) if i in options}
+    selected_id = people_table(display_rows, row_ids, people, scope)
+    if selected_id is not None:
+        st.button(
+            "Open person details", on_click=navigate, args=("People", selected_id, "Find people")
+        )
+        if can("privacy") and people[selected_id]["active"]:
+            delete_person_button(people[selected_id], "Records")
     if not rows:
         st.info("No attendance recorded for these filters yet.")
     if rows:
         counted = [r for r in rows if r["status"] in {"present", "late", "absent"}]
         if counted:
             rate = 100 * sum(r["status"] in {"present", "late"} for r in counted) / len(counted)
-            st.metric("Verified attendance rate", f"{rate:.1f}%")
+            st.metric("Recorded attendance rate", f"{rate:.1f}%")
         st.caption(
-            "Rate = (present + late) / (present + late + finalized absent). Pending, leave, excused, holidays and unfinalized missing records are excluded."
+            "Rate = (present + late) / (present + late + finalized absent). Present includes automatic face matches. Pending, leave, excused, holidays and unfinalized missing records are excluded."
         )
         with st.expander("Charts and trends"):
             trends(rows)
     if can("export") and (export or rows):
-        kind = st.selectbox("Export format", ["csv", "xlsx", "pdf"])
+        kind = st.selectbox(
+            "Export format", ["csv", "xlsx", "pdf"], key=control_key(scope, "export")
+        )
         if st.button("Prepare report"):
             content = request("GET", "/reports/export", params={**params, "kind": kind})
             st.download_button(

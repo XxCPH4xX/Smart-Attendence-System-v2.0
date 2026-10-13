@@ -106,20 +106,32 @@ def test_guardian_and_consent_revocation(client, person_payload):
     assert client.get(f"/people/{person['id']}/enrollments").json()["consents"][0]["revoked_at"]
 
 
-def test_delete_requires_inactive_and_preserves_audit(client, person, person_payload):
+def test_delete_active_person_directly_and_preserve_audit(client, person):
     path = f"/people/{person['id']}"
     assert (
-        client.request("DELETE", path, json={"reason": "Delete authorized profile"}).status_code
-        == 409
-    )
-    person_payload["active"] = False
-    assert client.put(path, json=person_payload).status_code == 200
-    assert (
-        client.request("DELETE", path, json={"reason": "Delete authorized profile"}).status_code
+        client.request("DELETE", path, json={"reason": "Remove authorized profile"}).status_code
         == 204
     )
     assert client.get(path).status_code == 404
     assert any(x["action"] == "person_deleted" for x in client.get("/audit").json())
+
+
+@pytest.mark.parametrize("role", ["admin", "teacher", "staff_operator", "viewer"])
+def test_delete_person_requires_privacy_permission(client, person, role):
+    client.post("/users", json={"username": role, "password": "role-test-password", "role": role})
+    token = client.post(
+        "/auth/login", json={"username": role, "password": "role-test-password"}
+    ).json()["token"]
+    assert (
+        client.request(
+            "DELETE",
+            f"/people/{person['id']}",
+            json={"reason": "Deleted from People"},
+            headers={"Authorization": "Bearer " + token},
+        ).status_code
+        == 403
+    )
+    assert client.get(f"/people/{person['id']}").json()["active"]
 
 
 def test_password_change_invalidates_sessions(client):
@@ -180,3 +192,20 @@ def test_password_whitespace_is_preserved_through_login_and_change(client):
         ).status_code
         == 200
     )
+
+
+def test_successful_sign_ins_do_not_trigger_lockout(client):
+    for _ in range(6):
+        response = client.post(
+            "/auth/login", json={"username": "administrator", "password": "test-password-123"}
+        )
+        assert response.status_code == 200
+        assert (
+            client.post(
+                "/auth/logout",
+                headers={
+                    "Authorization": "Bearer " + response.json()["token"],
+                },
+            ).status_code
+            == 204
+        )

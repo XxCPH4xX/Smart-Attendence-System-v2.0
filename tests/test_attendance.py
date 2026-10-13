@@ -176,15 +176,33 @@ def test_session_validation(client, session_payload):
     assert client.post("/sessions", json=session_payload).status_code == 422
 
 
-def test_person_with_roster_cannot_be_deleted(client, attendance_session, person, person_payload):
-    person_payload["active"] = False
-    client.put(f"/people/{person['id']}", json=person_payload)
+def test_remove_person_with_history_preserves_attendance(client, attendance_session, person):
+    assert (
+        client.post(
+            "/attendance/correct",
+            json={
+                "session_id": attendance_session["id"],
+                "person_id": person["id"],
+                "status": "present",
+                "check_in": attendance_session["starts_at"],
+                "reason": "Verified arrival at reception",
+            },
+        ).status_code
+        == 200
+    )
     assert (
         client.request(
-            "DELETE", f"/people/{person['id']}", json={"reason": "Delete retained person"}
+            "DELETE", f"/people/{person['id']}", json={"reason": "Removed from People"}
         ).status_code
-        == 409
+        == 204
     )
+    assert not client.get(f"/people/{person['id']}").json()["active"]
+    day = attendance_session["local_date"]
+    records = client.get("/attendance", params={"start": day, "end": day}).json()
+    assert len(records) == 1
+    assert records[0]["full_name"] == person["full_name"]
+    assert records[0]["status"] == "present"
+    assert any(x["action"] == "person_removed" for x in client.get("/audit").json())
 
 
 def test_correction_rollback_on_error(client, app, attendance_session, person):

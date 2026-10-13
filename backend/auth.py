@@ -75,13 +75,17 @@ def login(db, username, password, client, hours):
     ]
     if counts[0] >= 5 or counts[1] >= 30:
         raise HTTPException(429, "Too many login attempts. Try again in 15 minutes.")
-    for bucket in buckets:
-        db.add(LoginAttempt(bucket=bucket))
+    attempts = [LoginAttempt(bucket=bucket) for bucket in buckets]
+    db.add_all(attempts)
     db.commit()
     user = db.scalar(select(User).where(User.username == username))
     valid = verify_password(password, user.password_hash if user else DUMMY_HASH)
     if not valid or not user or not user.active:
         raise HTTPException(401, "Invalid username or password")
+    # Reserve a rate-limit slot during verification, but only retain failed attempts.
+    db.execute(
+        delete(LoginAttempt).where(LoginAttempt.id.in_([attempt.id for attempt in attempts]))
+    )
     token = secrets.token_urlsafe(48)
     db.add(
         LoginSession(

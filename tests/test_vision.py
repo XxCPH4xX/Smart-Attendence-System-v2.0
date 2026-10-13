@@ -10,8 +10,8 @@ from fastapi import HTTPException
 from PIL import Image
 from sqlalchemy import select
 
-from backend.biometrics import cipher, decode_image
-from backend.models import FaceTemplate, Person, Policy, User
+from backend.biometrics import MODEL_VERSION, cipher, decode_image
+from backend.models import Consent, Enrollment, FaceTemplate, Person, Policy, ProfilePhoto, User
 from backend.people import bump_index
 from vision.alignment import align_face, clamp_box, quality
 from vision.camera import RemoteProcessor, draw_overlays
@@ -173,6 +173,78 @@ def test_enrollment_encrypted_refresh_and_revoke(app, client, person, monkeypatc
         assert vision.index.match(unit(0)).person_id is None
 
 
+@pytest.mark.parametrize("history", ["none", "roster", "leave"])
+def test_delete_clears_face_data_and_refreshes_recognition(
+    app, client, person, session_payload, history
+):
+    if history == "roster":
+        assert client.post("/sessions", json=session_payload).status_code == 201
+    elif history == "leave":
+        assert (
+            client.post(
+                "/leaves",
+                json={
+                    "person_id": person["id"],
+                    "starts_on": "2026-10-12",
+                    "ends_on": "2026-10-13",
+                    "reason": "Approved test leave",
+                },
+            ).status_code
+            == 201
+        )
+    consent = client.post(
+        f"/people/{person['id']}/consent",
+        json={
+            "basis": "explicit_consent",
+            "statement": "Permission for test enrollment in an isolated database",
+        },
+    ).json()
+    with app.state.sessions() as db:
+        enrollment = Enrollment(
+            person_id=person["id"], consent_id=consent["id"], recorded_by=1, sample_count=3
+        )
+        db.add(enrollment)
+        db.flush()
+        db.add(
+            FaceTemplate(
+                person_id=person["id"],
+                enrollment_id=enrollment.id,
+                encrypted_vector=cipher(app.state.settings).encrypt(unit(0).tobytes()),
+                model_version=MODEL_VERSION,
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+        db.add(
+            ProfilePhoto(
+                person_id=person["id"],
+                encrypted_jpeg=cipher(app.state.settings).encrypt(jpeg("blue")),
+            )
+        )
+        bump_index(db)
+        db.commit()
+        app.state.vision.refresh(db)
+        assert app.state.vision.index.match(unit(0)).person_id == person["id"]
+    assert (
+        client.request(
+            "DELETE", f"/people/{person['id']}", json={"reason": "Deleted from People"}
+        ).status_code
+        == 204
+    )
+    with app.state.sessions() as db:
+        app.state.vision.refresh(db)
+        assert app.state.vision.index.match(unit(0)).person_id is None
+        assert not db.scalars(select(FaceTemplate)).all()
+        assert db.get(ProfilePhoto, person["id"]) is None
+        if history == "none":
+            assert db.get(Person, person["id"]) is None
+            assert db.get(Consent, consent["id"]) is None
+        else:
+            assert not db.get(Person, person["id"]).active
+            assert db.get(Consent, consent["id"]).revoked_at is not None
+    if history == "leave":
+        assert len(client.get("/leaves").json()) == 1
+
+
 def test_raw_embeddings_cannot_be_submitted_as_attendance(client):
     assert (
         client.post("/attendance/recognize", json={"person_id": 1, "score": 1.0}).status_code == 404
@@ -217,3 +289,40 @@ def test_inactive_index_exclusion(app, client, person):
         service.refresh(db)
         assert service.index.version == db.get(Policy, 1).index_version
         assert len(service.index.labels) == 0
+
+
+@pytest.mark.parametrize("interval", [0.2, 0.5, 2.5, 5.0])
+def test_stability_supports_configured_processing_interval(
+    app, client, person, attendance_session, monkeypatch, interval
+):
+    policy = client.get("/settings").json()["policy"]
+    client.put("/settings", json={**policy, "processing_interval": interval})
+    service = app.state.vision
+    service.load = Mock()
+    service.analyze = Mock(
+        return_value=[
+            {
+                "box": [0, 0, 100, 100],
+                "person_id": person["id"],
+                "name": "Test",
+                "label": "Student",
+            }
+        ]
+    )
+    clock = [1000.0]
+    monkeypatch.setattr("backend.biometrics.time.monotonic", lambda: clock[0])
+    key = client.post("/vision/streams", json={"session_id": attendance_session["id"]}).json()[
+        "stream_id"
+    ]
+    with app.state.sessions() as db:
+        for i in range(max(3, int(np.ceil(1 / interval)) + 2)):
+            clock[0] = 1000 + i * interval
+            result = service.process_frame(
+                db, db.get(User, 1), key, np.zeros((160, 160, 3), np.uint8)
+            )
+        assert result["faces"][0]["stable"]
+        assert result["faces"][0]["attendance_status"] == "pending_verification"
+        # A genuinely interrupted observation sequence must still start over.
+        clock[0] += max(3, interval * 3)
+        result = service.process_frame(db, db.get(User, 1), key, np.zeros((160, 160, 3), np.uint8))
+        assert not result["faces"][0]["stable"]

@@ -66,6 +66,7 @@ def report_rows(
         rows.append(
             {
                 "record_id": record.id,
+                "person_id": person.id,
                 "session_id": session.id,
                 "session": session.name,
                 "date": session.local_date.isoformat(),

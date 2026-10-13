@@ -5,6 +5,7 @@ import streamlit as st
 
 from backend.db import utcnow
 from frontend.client import people_options, person_label, request
+from frontend.controls import control_key, reset_button
 
 
 def render():
@@ -14,12 +15,17 @@ def render():
         ["Create session", "Finalize session", "Leave", "Holidays", "Departments, classes & shifts"]
     )
     with tabs[0]:
+        reset_button("schedule", label="Reset session form")
         config = request("GET", "/settings")
         zone = ZoneInfo(config["timezone"])
         today = utcnow().astimezone(zone).date()
-        category = st.selectbox("Session category", ["student", "teacher", "staff", "other"])
+        category = st.selectbox(
+            "Session category",
+            ["student", "teacher", "staff", "other"],
+            key=control_key("schedule", "category"),
+        )
         options = people_options(category, True)
-        with st.form("session"):
+        with st.form(control_key("schedule", "form")):
             name = st.text_input("Session name", placeholder="Class 10 · Morning attendance")
             a, b, c = st.columns(3)
             day = a.date_input("Session date", today)
@@ -54,6 +60,7 @@ def render():
                 )
                 st.success(f"Session #{result['id']} created with an explicit roster")
     with tabs[1]:
+        reset_button("finalize", label="Reset selection")
         candidates = {s["id"]: s for s in sessions if not s["finalized"] and not s.get("station")}
         st.write(
             "After a session ends, finalize it to create absent, approved leave, or holiday records for roster members without a record. Pending recognition stays pending."
@@ -63,6 +70,7 @@ def render():
                 "Session to finalize",
                 list(candidates),
                 format_func=lambda i: f"#{i} · {candidates[i]['name']} · {candidates[i]['local_date']}",
+                key=control_key("finalize", "session"),
             )
             if st.button("Finalize ended session"):
                 result = request("POST", f"/sessions/{selected}/finalize")
@@ -70,10 +78,11 @@ def render():
         else:
             st.info("No unfinalized sessions.")
     with tabs[2]:
+        reset_button("leave", label="Reset leave form")
         st.dataframe(request("GET", "/leaves"), hide_index=True, use_container_width=True)
         options = people_options()
         if options:
-            with st.form("leave"):
+            with st.form(control_key("leave", "form")):
                 person_id = st.selectbox(
                     "Person", list(options), format_func=lambda i: person_label(options[i])
                 )
@@ -94,8 +103,10 @@ def render():
                     )
                     st.rerun()
             with st.expander("Revoke leave"):
-                leave_id = st.number_input("Leave record ID", min_value=1, step=1)
-                reason = st.text_input("Revocation reason")
+                leave_id = st.number_input(
+                    "Leave record ID", min_value=1, step=1, key=control_key("leave", "id")
+                )
+                reason = st.text_input("Revocation reason", key=control_key("leave", "reason"))
                 if st.button("Revoke leave record"):
                     request("DELETE", f"/leaves/{leave_id}", json={"reason": reason})
                     st.rerun()
@@ -103,26 +114,32 @@ def render():
             "Changing leave or holidays does not rewrite existing attendance; use Records → Review & correct for those records."
         )
     with tabs[3]:
+        reset_button("holiday", label="Reset holiday form")
         holidays = request("GET", "/holidays")
         st.dataframe(holidays, hide_index=True)
-        with st.form("holiday"):
+        with st.form(control_key("holiday", "form")):
             day = st.date_input("Holiday date")
             name = st.text_input("Holiday name")
             if st.form_submit_button("Save holiday"):
                 request("POST", "/holidays", json={"day": day.isoformat(), "name": name})
                 st.rerun()
         if holidays:
-            remove = st.selectbox("Holiday to remove", [h["day"] for h in holidays])
+            remove = st.selectbox(
+                "Holiday to remove",
+                [h["day"] for h in holidays],
+                key=control_key("holiday", "selected"),
+            )
             if st.button("Remove holiday"):
                 request("DELETE", f"/holidays/{remove}")
                 st.rerun()
     with tabs[4]:
+        reset_button("catalog", label="Reset organization form")
         st.caption(
             "Catalog entries describe departments, classes, courses and shift names. Session start/end times and explicit rosters determine attendance rules."
         )
         catalog = request("GET", "/catalog")
         st.dataframe(catalog, hide_index=True, use_container_width=True)
-        with st.form("catalog"):
+        with st.form(control_key("catalog", "form")):
             kind = st.selectbox("Type", ["department", "class", "course", "shift"])
             name = st.text_input("Name")
             description = st.text_input("Description (optional)")
@@ -135,9 +152,16 @@ def render():
                 st.rerun()
         if catalog:
             selected = st.selectbox(
-                "Edit catalog entry", catalog, format_func=lambda c: f"{c['kind']} · {c['name']}"
+                "Edit catalog entry",
+                catalog,
+                format_func=lambda c: f"{c['kind']} · {c['name']}",
+                key=control_key("catalog", "selected"),
             )
-            updated_name = st.text_input("Updated name", selected["name"])
+            updated_name = st.text_input(
+                "Updated name",
+                selected["name"],
+                key=control_key("catalog", f"name_{selected['id']}"),
+            )
             if st.button("Rename entry"):
                 request(
                     "PUT",
@@ -151,7 +175,16 @@ def render():
                 st.rerun()
 
 
+def form_timestamp(day, clock, original):
+    chosen = datetime.combine(day, clock, original.tzinfo)
+    # The time widget only represents minutes; preserve seconds when the time is unchanged.
+    if chosen.replace(second=0, microsecond=0) == original.replace(second=0, microsecond=0):
+        return original.isoformat()
+    return chosen.isoformat()
+
+
 def corrections():
+    reset_button("corrections", label="Reset correction form")
     sessions = {s["id"]: s for s in request("GET", "/sessions")}
     if not sessions:
         st.info("Create an attendance session with an assigned roster first.")
@@ -160,6 +193,7 @@ def corrections():
         "Attendance session",
         list(sessions),
         format_func=lambda i: f"#{i} · {sessions[i]['name']} · {sessions[i]['local_date']}",
+        key=control_key("corrections", "session"),
     )
     session = sessions[selected]
     rows = request(
@@ -170,7 +204,7 @@ def corrections():
     pending = {r["record_id"]: r for r in rows if r["verification"] == "pending"}
     if pending:
         st.subheader("Verify camera attendance")
-        with st.form("approve"):
+        with st.form(control_key("corrections", "approve")):
             record_id = st.selectbox(
                 "Pending record",
                 list(pending),
@@ -192,7 +226,10 @@ def corrections():
     if not options:
         return
     person_id = st.selectbox(
-        "Roster member", list(options), format_func=lambda i: person_label(options[i])
+        "Roster member",
+        list(options),
+        format_func=lambda i: person_label(options[i]),
+        key=control_key("corrections", f"person_{selected}"),
     )
     existing = next(
         (r for r in rows if r["institutional_id"] == options[person_id]["institutional_id"]), None
@@ -211,32 +248,40 @@ def corrections():
         statuses,
         index=statuses.index(existing["status"]) if existing else 0,
         format_func=lambda value: value.replace("_", " ").title(),
+        key=control_key("corrections", f"status_{selected}_{person_id}"),
     )
     zone = ZoneInfo(session["timezone"])
     attending = status in {"present", "late", "pending_verification"}
     default_in = datetime.fromisoformat(
         existing["check_in"] if existing and existing["check_in"] else session["starts_at"]
     ).astimezone(zone)
+    now = utcnow().astimezone(zone)
+    if not existing and session.get("station") and session["local_date"] == now.date().isoformat():
+        default_in = now.replace(microsecond=0)
     default_out = datetime.fromisoformat(
         existing["check_out"] if existing and existing["check_out"] else session["ends_at"]
     ).astimezone(zone)
     checkout = (
         attending
         and session["checkout_enabled"]
-        and st.checkbox("Include checkout time", bool(existing and existing["check_out"]))
+        and st.checkbox(
+            "Include checkout time",
+            bool(existing and existing["check_out"]),
+            key=control_key("corrections", f"checkout_{selected}_{person_id}"),
+        )
     )
-    with st.form("correction"):
+    with st.form(control_key("corrections", f"form_{selected}_{person_id}")):
         check_in = check_out = None
         if attending:
             a, b = st.columns(2)
             in_date = a.date_input("Check-in date", default_in.date())
-            in_time = b.time_input("Check-in time", default_in.time())
-            check_in = datetime.combine(in_date, in_time, zone).isoformat()
+            in_time = b.time_input("Check-in time", default_in.time(), step=60)
+            check_in = form_timestamp(in_date, in_time, default_in)
         if checkout:
             a, b = st.columns(2)
             out_date = a.date_input("Check-out date", default_out.date())
-            out_time = b.time_input("Check-out time", default_out.time())
-            check_out = datetime.combine(out_date, out_time, zone).isoformat()
+            out_time = b.time_input("Check-out time", default_out.time(), step=60)
+            check_out = form_timestamp(out_date, out_time, default_out)
         st.caption(f"Times use {session['timezone']}.")
         reason = st.text_area("Why are you recording or changing this attendance?")
         if st.form_submit_button("Save attendance", type="primary"):

@@ -1,7 +1,7 @@
 import streamlit as st
 
 from frontend.client import APIError, can, clear_session, request
-from frontend.navigation import navigate
+from frontend.navigation import navigate, option_buttons
 from frontend.views import administration, analytics, home, live, people, schedules
 
 st.set_page_config(page_title="Smart Attendance", page_icon="◉", layout="wide")
@@ -61,7 +61,16 @@ def main():
     with st.sidebar:
         st.title("Attendance")
         st.caption("Signed in as " + st.session_state.user["username"])
-        selected = st.radio("Workspace", pages, key="page", label_visibility="collapsed")
+        for page in pages:
+            st.button(
+                page,
+                key=f"nav_{page}",
+                use_container_width=True,
+                type="primary" if st.session_state.page == page else "secondary",
+                on_click=navigate,
+                args=(page,),
+            )
+        selected = st.session_state.page
         st.divider()
         st.caption("Add a person → Add their face → Take attendance")
         if st.button("Sign out", use_container_width=True):
@@ -80,6 +89,9 @@ def main():
     message = st.session_state.pop("notice", None)
     if message:
         st.success(message)
+    error = st.session_state.pop("notice_error", None)
+    if error:
+        st.error(error)
     if selected == "Home":
         home.render()
     elif selected == "People":
@@ -90,7 +102,7 @@ def main():
         options = ["Attendance history"]
         if can("correct"):
             options.append("Review & correct")
-        selected_view = st.radio("Show", options, horizontal=True, key="records_view")
+        selected_view = option_buttons("Show", options, key="records_view")
         if selected_view == "Review & correct":
             schedules.corrections()
         else:

@@ -252,7 +252,11 @@ class VisionService:
                 "station": station,
                 "last_seen": now,
                 "last_frame": 0,
-                "tracker": StabilityTracker(policy.stable_observations, policy.stable_seconds),
+                "tracker": StabilityTracker(
+                    policy.stable_observations,
+                    policy.stable_seconds,
+                    max_gap=max(2.0, policy.processing_interval * 2),
+                ),
             }
             return key
 

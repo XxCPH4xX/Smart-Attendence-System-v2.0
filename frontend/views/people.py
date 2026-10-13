@@ -6,11 +6,20 @@ import streamlit as st
 
 from backend.db import utcnow
 from frontend.client import can, people_options, person_label, request
-from frontend.navigation import navigate, redirect
+from frontend.controls import (
+    control_key,
+    delete_person_button,
+    people_table,
+    reset_button,
+    reset_section,
+)
+from frontend.navigation import navigate, option_buttons, redirect
 
 
 def person_form(person=None):
     person = person or {}
+    scope = f"person_form_{person.get('id', 'new')}"
+    reset_button(scope, label="Reset form")
     details = person.get("details", {})
     catalog = request("GET", "/catalog")
     config = request("GET", "/settings")
@@ -21,6 +30,7 @@ def person_form(person=None):
         format_func=str.title,
         index=categories.index(person.get("category", "student")),
         disabled=bool(person),
+        key=control_key(scope, "category"),
     )
 
     def catalog_select(label, kind, selected):
@@ -32,7 +42,7 @@ def person_form(person=None):
             index=list(options).index(selected) if selected in options else 0,
         )
 
-    with st.form("person_form"):
+    with st.form(control_key(scope, "form")):
         a, b = st.columns(2)
         name = a.text_input("Full name", person.get("full_name", ""), max_chars=160)
         institutional_id = b.text_input(
@@ -54,7 +64,7 @@ def person_form(person=None):
                     if person
                     else utcnow().astimezone(ZoneInfo(config["timezone"])).date(),
                 )
-                active = st.checkbox("Active", person.get("active", True))
+                active = st.checkbox("Allow this person to check in", person.get("active", True))
                 notes = st.text_area("Notes", person.get("notes", ""), max_chars=3000)
             with b:
                 specific = {}
@@ -123,9 +133,19 @@ def person_form(person=None):
 
 def enrollment(person):
     person_id = person["id"]
+    scope = f"enrollment_{person_id}"
+    reset_button(
+        scope,
+        label="Reset enrollment form",
+        clear_keys=(
+            f"samples_{person_id}",
+            f"replace_face_{person_id}",
+            f"photo_source_{person_id}",
+        ),
+    )
     st.subheader(person_label(person))
     if not person["active"]:
-        st.info("Reactivate this person before adding face samples.")
+        st.info("Restore this person from People → Removed people before adding face samples.")
         return
     history = request("GET", f"/people/{person_id}/enrollments")
     consents = [c for c in history["consents"] if not c["revoked_at"]]
@@ -148,7 +168,7 @@ def enrollment(person):
         st.write(
             f"We keep an encrypted face template for up to {days} days. Enrollment photos and camera footage are not saved. You can remove the template later or use manual attendance instead."
         )
-        with st.form(f"consent_{person_id}"):
+        with st.form(control_key(scope, "consent")):
             basis = st.selectbox(
                 "Permission type",
                 ["explicit_consent", "institutional_authorization"],
@@ -187,10 +207,9 @@ def enrollment(person):
         st.write(
             "Take one looking straight ahead, one slightly left, and one slightly right. Keep only your face in the picture."
         )
-        source = st.radio(
+        source = option_buttons(
             "Photo source",
             ["Use webcam", "Upload photos"],
-            horizontal=True,
             key=f"photo_source_{person_id}",
         )
         capture_key = f"samples_{person_id}"
@@ -201,11 +220,13 @@ def enrollment(person):
                 "Choose 3–12 different photos",
                 type=["jpg", "jpeg", "png"],
                 accept_multiple_files=True,
-                key=f"uploads_{person_id}_{generation}",
+                key=control_key(scope, f"uploads_{person_id}_{generation}"),
             )
             images = [(file.name, file.getvalue()) for file in files]
         else:
-            capture = st.camera_input("Take a photo", key=f"capture_{person_id}_{generation}")
+            capture = st.camera_input(
+                "Take a photo", key=control_key(scope, f"capture_{person_id}_{generation}")
+            )
             if capture and st.button("Keep this photo", type="primary"):
                 content = capture.getvalue()
                 digest = hashlib.sha256(content).hexdigest()
@@ -254,9 +275,12 @@ def enrollment(person):
     with st.expander("Enrollment history and removal"):
         st.dataframe(history["enrollments"], use_container_width=True, hide_index=True)
         if consents or person["enrolled"]:
-            reason = st.text_input("Reason for removing face data")
+            reason = st.text_input(
+                "Reason for removing face data", key=control_key(scope, "reason")
+            )
             confirmed = st.checkbox(
-                "Remove the face template and profile photo, and revoke permission"
+                "Remove the face template and profile photo, and revoke permission",
+                key=control_key(scope, "confirm"),
             )
             if st.button("Remove face data", disabled=not confirmed):
                 request("DELETE", f"/people/{person_id}/biometrics", json={"reason": reason})
@@ -266,80 +290,118 @@ def enrollment(person):
 
 
 def directory():
+    scope = "directory"
+    reset_button(scope, label="Reset filters")
+    target = st.session_state.pop("directory_target", None)
+    if target:
+        reset_section(scope, ())
+        person = request("GET", f"/people/{target}")
+        st.session_state[control_key(scope, "search")] = person["institutional_id"]
+        st.session_state[control_key(scope, "state")] = "Everyone"
+        st.session_state[control_key(scope, "person")] = target
     a, b = st.columns([2, 1])
-    q = a.text_input("Find a person", placeholder="Search by name or ID")
+    q = a.text_input(
+        "Find a person", placeholder="Search by name or ID", key=control_key(scope, "search")
+    )
     category = b.selectbox(
-        "Person type", ["All", "student", "teacher", "staff", "other"], format_func=str.title
+        "Person type",
+        ["All", "student", "teacher", "staff", "other"],
+        format_func=str.title,
+        key=control_key(scope, "category"),
     )
     params = dict(q=q, limit=25)
     if category != "All":
         params["category"] = category
     with st.expander("More filters"):
         catalog = request("GET", "/catalog")
-        state = st.selectbox("Status", ["All", "Active", "Inactive"])
+        state = st.selectbox(
+            "Show",
+            ["Registered people", "Removed people", "Everyone"],
+            key=control_key(scope, "state"),
+        )
         department = st.selectbox(
             "Department",
             [None, *[c for c in catalog if c["kind"] == "department"]],
             format_func=lambda c: c["name"] if c else "All departments",
+            key=control_key(scope, "department"),
         )
         class_entry = st.selectbox(
             "Class",
             [None, *[c for c in catalog if c["kind"] == "class"]],
             format_func=lambda c: c["name"] if c else "All classes",
+            key=control_key(scope, "class"),
         )
-        section = st.text_input("Section")
+        section = st.text_input("Section", key=control_key(scope, "section"))
         params["sort"] = st.selectbox(
-            "Sort by", ["name", "id"], format_func=lambda x: "Name" if x == "name" else "ID"
+            "Sort by",
+            ["name", "id"],
+            format_func=lambda x: "Name" if x == "name" else "ID",
+            key=control_key(scope, "sort"),
         )
-        if state != "All":
-            params["active"] = state == "Active"
+        if state != "Everyone":
+            params["active"] = state == "Registered people"
         if department:
             params["department_id"] = department["id"]
         if class_entry:
             params["class_id"] = class_entry["id"]
         if section:
             params["section"] = section
-    page = st.number_input("Page", min_value=1, value=1, step=1)
+    page = st.number_input("Page", min_value=1, value=1, step=1, key=control_key(scope, "page"))
     params["offset"] = (page - 1) * 25
     response = request("GET", "/people", params=params)
     st.caption(f"{response['total']} people found")
     items = response["items"]
-    st.dataframe(
+    options = {p["id"]: p for p in items}
+    selected = people_table(
         [
             {
                 "Name": p["full_name"],
                 "ID": p["institutional_id"],
                 "Type": p["category"].title(),
-                "Status": "Active" if p["active"] else "Inactive",
+                "Status": "Registered" if p["active"] else "Removed",
                 "Face": "Ready" if p["enrolled"] else "Not added",
             }
             for p in items
         ],
-        hide_index=True,
-        use_container_width=True,
+        [p["id"] for p in items],
+        options,
+        scope,
     )
-    if not items:
+    if selected is None:
         return
-    options = {p["id"]: p for p in items}
-    selected = st.selectbox(
-        "Person details", list(options), format_func=lambda i: person_label(options[i])
-    )
     person = options[selected]
-    if can("enroll"):
+    if can("privacy") and person["active"]:
+        delete_person_button(person, "People")
+    if can("enroll") and person["active"]:
         st.button(
             "Manage this person's face",
             on_click=navigate,
             args=("People", selected, "Enroll a face"),
         )
-    if can("people") and st.toggle("Edit this person's details"):
+    if can("people") and st.toggle(
+        "Edit this person's details", key=control_key(scope, f"edit_{selected}")
+    ):
         if person_form(person):
             st.session_state.notice = "Person updated."
+            st.rerun()
+    if can("people") and not person["active"]:
+        st.info("This person has been removed. Their past records remain available.")
+        if st.button("Restore person"):
+            data = {key: value for key, value in person.items() if key not in {"id", "enrolled"}}
+            request("PUT", f"/people/{selected}", json={**data, "active": True})
+            st.session_state.notice = (
+                "Person restored. Add their face again to use camera attendance."
+            )
             st.rerun()
     if can("people"):
         with st.expander("Profile photo"):
             if st.button("View profile photo"):
                 st.image(request("GET", f"/people/{selected}/photo"), width=240)
-            photo = st.file_uploader("Choose a profile photo", type=["jpg", "jpeg", "png"])
+            photo = st.file_uploader(
+                "Choose a profile photo",
+                type=["jpg", "jpeg", "png"],
+                key=control_key(scope, f"photo_{selected}"),
+            )
             if photo and st.button("Save profile photo"):
                 request(
                     "POST",
@@ -347,16 +409,6 @@ def directory():
                     files={"file": (photo.name, photo.getvalue())},
                 )
                 st.success("Profile photo saved")
-    if can("privacy"):
-        with st.expander("Delete this person"):
-            reason = st.text_input("Deletion reason", help="Enter at least 5 characters.")
-            confirmation = st.text_input("Type the person's ID to confirm")
-            if st.button("Delete person", disabled=confirmation != person["institutional_id"]):
-                if len(reason.strip()) < 5:
-                    st.error("Please enter a reason with at least 5 characters.")
-                else:
-                    request("DELETE", f"/people/{selected}", json={"reason": reason})
-                    st.rerun()
 
 
 def render():
@@ -365,9 +417,7 @@ def render():
         actions.append("Add person")
     if can("enroll"):
         actions.append("Enroll a face")
-    if st.session_state.get("people_action") not in actions:
-        st.session_state.people_action = "Find people"
-    action = st.radio("What would you like to do?", actions, key="people_action", horizontal=True)
+    action = option_buttons("What would you like to do?", actions, key="people_action")
     if action == "Add person":
         st.caption("Start with a name and ID. You can fill in other details later.")
         saved = person_form()
@@ -377,7 +427,7 @@ def render():
             )
             redirect("People", saved["id"], "Enroll a face" if can("enroll") else "Find people")
     elif action == "Enroll a face":
-        options = people_options()
+        options = people_options(active=True)
         if not options:
             st.info("Add a person first, then come back here to enroll their face.")
             st.button("Add a person", on_click=navigate, args=("People", None, "Add person"))

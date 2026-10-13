@@ -6,6 +6,7 @@ from streamlit_webrtc import WebRtcMode, webrtc_streamer
 from backend.config import get_settings
 from backend.db import utcnow
 from frontend.client import can, request
+from frontend.controls import control_key, reset_button
 from vision.camera import RemoteProcessor
 
 
@@ -15,9 +16,14 @@ def station_settings(policy):
             "Choose a camera using the camera selector in the live preview. Stop the station before changing its settings."
         )
         if can("settings"):
-            with st.form("station_settings"):
+            reset_button(
+                "station_settings",
+                label="Reset unsaved settings",
+                disabled=bool(st.session_state.get("stream_id")),
+            )
+            with st.form(control_key("station_settings", "form")):
                 name = st.text_input("Station name", policy["station_name"], max_chars=100)
-                mode = st.radio(
+                mode = st.selectbox(
                     "When a person is recognized",
                     ["Mark attendance automatically", "Send check-in for staff review"],
                     index=0 if policy["station_auto_mark"] else 1,

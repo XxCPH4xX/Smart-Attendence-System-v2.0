@@ -9,8 +9,9 @@ from backend.auth import (
     require,
 )
 from backend.biometrics import cipher, decode_image
-from backend.db import get_db
+from backend.db import get_db, utcnow
 from backend.models import (
+    AttendanceRecord,
     Consent,
     Enrollment,
     FaceTemplate,
@@ -182,16 +183,37 @@ def delete_person(
     person_id: int, data: ReasonInput, user=Depends(require("privacy")), db=Depends(get_db)
 ):
     person = lookup(db, Person, person_id)
-    if person.active:
-        raise HTTPException(409, "Deactivate this person before deletion")
-    if db.scalar(
-        select(SessionMember.person_id).where(SessionMember.person_id == person_id).limit(1)
-    ):
-        raise HTTPException(
-            409, "Attendance roster retained; purge expired sessions before deleting"
+    retained = (
+        db.scalar(
+            select(SessionMember.person_id).where(SessionMember.person_id == person_id).limit(1)
         )
-    if db.scalar(select(Leave.id).where(Leave.person_id == person_id).limit(1)):
-        raise HTTPException(409, "Leave history retained; purge expired leave records first")
+        or db.scalar(select(Leave.id).where(Leave.person_id == person_id).limit(1))
+        or db.scalar(
+            select(AttendanceRecord.id).where(AttendanceRecord.person_id == person_id).limit(1)
+        )
+    )
+    if retained:
+        before = person_dict(db, person)
+        person.active = False
+        db.execute(delete(FaceTemplate).where(FaceTemplate.person_id == person_id))
+        db.execute(delete(ProfilePhoto).where(ProfilePhoto.person_id == person_id))
+        for consent in db.scalars(
+            select(Consent).where(Consent.person_id == person_id, Consent.revoked_at.is_(None))
+        ):
+            consent.revoked_at = utcnow()
+        bump_index(db)
+        audit(
+            db,
+            user,
+            "person_removed",
+            "person",
+            person_id,
+            before=before,
+            after={"active": False, "history_retained": True},
+            reason=data.reason,
+        )
+        db.commit()
+        return
     # Delete dependents in foreign-key order while retaining administrative audit history.
     for model in (FaceTemplate, Enrollment, Consent, ProfilePhoto, PersonDetails):
         db.execute(delete(model).where(model.person_id == person_id))

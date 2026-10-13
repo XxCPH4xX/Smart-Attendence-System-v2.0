@@ -46,7 +46,9 @@ def render():
                 ]
                 st.caption("  →  ".join(steps))
                 if not demo["active"]:
-                    st.info("This test profile is inactive. You can reactivate it in People.")
+                    st.info(
+                        "This test profile was removed. To use it again, open People → More filters → Removed people → Restore person."
+                    )
                 elif not demo["enrolled"]:
                     st.write("Next: give permission and take three clear photos of your own face.")
                     st.caption(
