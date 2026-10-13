@@ -2,20 +2,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 
 from backend.api.common import lookup
-from backend.auth import (
-    audit,
-    require,
-)
+from backend.auth import audit, require
 from backend.biometrics import decode_image
 from backend.db import get_db, utcnow
-from backend.models import (
-    AttendanceSession,
-    FaceTemplate,
-)
+from backend.models import AttendanceSession, FaceTemplate
 from backend.people import get_policy
-from backend.schemas import (
-    StreamInput,
-)
+from backend.schemas import StreamInput
 from backend.station import daily_station, enrolled_people
 
 router = APIRouter()

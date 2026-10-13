@@ -1,31 +1,24 @@
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import select
 
-from backend.auth import (
-    audit,
-    require,
-)
+from backend.auth import audit, require
 from backend.db import get_db
-from backend.models import (
-    AuditLog,
-    Policy,
-)
+from backend.models import AuditLog, Policy
 from backend.people import get_policy
-from backend.schemas import (
-    PolicyInput,
-)
+from backend.schemas import PolicyInput
 
 router = APIRouter()
 
 
 @router.get("/settings")
 def settings(request: Request, user=Depends(require("read")), db=Depends(get_db)):
+    policy = get_policy(db)
     return {
-        "policy": get_policy(db).model_dump(),
+        "policy": policy.model_dump(),
         "institution": request.app.state.settings.institution,
         "timezone": request.app.state.settings.timezone,
         "device": request.app.state.settings.device,
-        "station_staff_verification_required": not get_policy(db).station_auto_mark,
+        "station_staff_verification_required": not policy.station_auto_mark,
         "scheduled_staff_verification_required": True,
         "index_version": db.get(Policy, 1).index_version,
     }

@@ -6,19 +6,9 @@ from sqlalchemy import select
 
 from backend import attendance
 from backend.api.common import lookup
-from backend.auth import (
-    audit,
-    require,
-)
+from backend.auth import audit, require
 from backend.db import get_db
-from backend.models import (
-    AttendanceSession,
-    Catalog,
-    Holiday,
-    Leave,
-    Person,
-    SessionMember,
-)
+from backend.models import AttendanceSession, Catalog, Holiday, Leave, Person, SessionMember
 from backend.people import get_policy
 from backend.schemas import (
     CatalogInput,

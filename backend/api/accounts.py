@@ -2,25 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import delete, select
 
 from backend.api.common import lookup, user_view
-from backend.auth import (
-    audit,
-    current_user,
-    digest,
-    hasher,
-    login,
-    require,
-    verify_password,
-)
+from backend.auth import audit, current_user, digest, hasher, login, require, verify_password
 from backend.db import get_db
-from backend.models import (
-    LoginSession,
-    User,
-)
-from backend.schemas import (
-    LoginInput,
-    PasswordInput,
-    UserInput,
-)
+from backend.models import LoginSession, User
+from backend.schemas import LoginInput, PasswordInput, UserInput
 
 router = APIRouter()
 

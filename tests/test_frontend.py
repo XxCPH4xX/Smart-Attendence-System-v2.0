@@ -53,7 +53,6 @@ def test_dashboard_pages_use_live_api_data(client, person, attendance_session, m
         assert not app.exception, (page, app.exception)
         assert not app.error, (page, app.error)
 
-    # Administrative tools remain accessible without cluttering the main navigation.
     tools = app.selectbox[0].options
     for tool in tools:
         app.selectbox[0].select(tool).run()
@@ -81,7 +80,6 @@ def test_dashboard_pages_use_live_api_data(client, person, attendance_session, m
     assert not demo["enrolled"]
     assert len(client.get(f"/people/{demo['id']}/enrollments").json()["consents"]) == 1
 
-    # The daily station needs no person selection or per-person session setup.
     next(button for button in app.sidebar.button if button.label == "Take attendance").click().run()
     assert not app.exception
     assert not app.error

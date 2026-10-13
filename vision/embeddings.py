@@ -6,8 +6,6 @@ from facenet_pytorch import InceptionResnetV1
 
 from vision.recognition import normalize
 
-MODEL_VERSION = "facenet-vggface2-mp-align-v1"
-
 
 class Embedder:
     def __init__(self, asset_dir: Path, device="cpu"):

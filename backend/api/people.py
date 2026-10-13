@@ -4,12 +4,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Res
 from sqlalchemy import delete, func, select
 
 from backend.api.common import lookup
-from backend.auth import (
-    audit,
-    require,
-)
+from backend.auth import audit, require
 from backend.biometrics import cipher, decode_image
-from backend.db import get_db, utcnow
+from backend.db import get_db
 from backend.models import (
     AttendanceRecord,
     Consent,
@@ -21,12 +18,8 @@ from backend.models import (
     ProfilePhoto,
     SessionMember,
 )
-from backend.people import bump_index, person_dict, revoke_biometrics, save_person
-from backend.schemas import (
-    ConsentInput,
-    PersonInput,
-    ReasonInput,
-)
+from backend.people import bump_index, clear_biometrics, person_dict, revoke_biometrics, save_person
+from backend.schemas import ConsentInput, PersonInput, ReasonInput
 
 router = APIRouter()
 
@@ -195,13 +188,7 @@ def delete_person(
     if retained:
         before = person_dict(db, person)
         person.active = False
-        db.execute(delete(FaceTemplate).where(FaceTemplate.person_id == person_id))
-        db.execute(delete(ProfilePhoto).where(ProfilePhoto.person_id == person_id))
-        for consent in db.scalars(
-            select(Consent).where(Consent.person_id == person_id, Consent.revoked_at.is_(None))
-        ):
-            consent.revoked_at = utcnow()
-        bump_index(db)
+        clear_biometrics(db, person_id)
         audit(
             db,
             user,

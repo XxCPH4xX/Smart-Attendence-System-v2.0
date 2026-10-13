@@ -1,8 +1,6 @@
 from fastapi import HTTPException
 
-from backend.auth import (
-    PERMISSIONS,
-)
+from backend.auth import PERMISSIONS
 
 
 def lookup(db, model, key):

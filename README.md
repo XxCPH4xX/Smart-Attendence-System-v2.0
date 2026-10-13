@@ -6,7 +6,7 @@ The shared daily station marks stable face matches **Present** automatically. Ad
 
 ## Requirements
 
-- Python 3.11; the project and lockfile deliberately exclude Python 3.12+.
+- Python 3.11. Python 3.12+ is not supported by the pinned dependencies.
 - macOS 14+ on Apple Silicon, or a compatible Windows x86-64 / Linux x86-64 computer with a webcam. This development checkout is validated on macOS; the other platforms need hardware integration testing.
 - A browser that supports WebRTC and camera permissions.
 - Internet access for initial dependency and pretrained model downloads. Routine local use needs no cloud service.
@@ -49,7 +49,9 @@ On Windows, the same `uv` commands work in PowerShell. On Linux, OpenCV may requ
 
 The five main sections are **Home**, **People**, **Take attendance**, **Records** and **Settings**. Advanced administrative tools are grouped under Settings, and optional profile fields and report filters are collapsed.
 
-For a first test, use **Home → Create test profile**. This explicitly creates **Demo Student (DEMO-001)** and uses your existing login. Choose **Add my face**, record permission, then capture or upload three distinct photos. No consent, face images or attendance results are invented. If your face is already enrolled under another person, use that existing profile for testing; duplicate face identities are rejected. Demo records are labelled DEMO-001 in reports. When finished, select a person in **People** and click **Delete person**. The same action is available from **Records**. No prior deactivation, typed ID, reason or extra confirmation is required. Deletion erases saved face data and keeps existing attendance history.
+For a first test, use **Home → Create test profile** to create **Demo Student (DEMO-001)** under your existing login. Choose **Add my face**, record permission, then capture or upload three distinct photos. If your face is already enrolled, use that profile; duplicate face identities are rejected. Test records are labelled DEMO-001 in reports.
+
+To remove someone, select them in **People** or **Records** and click **Delete person**. Deletion erases saved face data and keeps existing attendance history.
 
 **Reset** buttons clear unsaved form entries and filters. Settings forms return to their last saved values. Reset never deletes people, attendance records or saved settings, and keeps you signed in.
 
@@ -80,9 +82,9 @@ Roles are intentionally conservative: Super Admin manages users, settings and re
 
 ## Evaluation
 
-The default cosine method is a provisional baseline, **not a calibrated institutional model**. A score is a similarity, not a probability. Use authorized captures from different sessions for enrollment, validation and test, and genuinely unknown identities in validation/test. The notebook rejects overlapping captures and identical file content, calibrates acceptance on validation only, and compares cosine, KNN and PyNNDescent approximate search on the untouched test split.
+The default cosine threshold requires local calibration. Scores represent similarity, not probability. Use authorized captures from separate sessions for enrollment, validation and test, with unenrolled identities in validation and test. The notebook rejects overlapping captures and duplicate images, calibrates thresholds on validation data, and compares cosine, KNN and PyNNDescent search on the held-out test split.
 
-Measurements include known accuracy, macro precision/recall/F1, unknown acceptance/rejection, known misidentification, a confusion matrix, matching latency, index build time and Python allocation peak. Matching latency excludes detection/embedding and Python allocation tracking excludes native PyTorch memory; the live panel reports full request processing latency. No recognition accuracy or hardware benchmark is supplied without a dataset. StandardScaler is omitted because it changes the unit-sphere geometry; an MLP is deferred until sufficient authorized data supports a meaningful experiment.
+Measurements include known accuracy, macro precision/recall/F1, unknown acceptance/rejection, known misidentification, a confusion matrix, matching latency, index build time and peak Python allocation. Matching latency excludes detection and embedding; Python allocation tracking excludes native PyTorch memory. Frame API responses include server processing time as `latency_ms`. Run the notebook on an authorized dataset to obtain recognition metrics and benchmarks.
 
 ```bash
 uv run jupyter notebook notebooks/recognition_evaluation.ipynb
@@ -116,6 +118,6 @@ Unit/API tests use temporary databases, synthetic embeddings and mocked inferenc
 
 ## References and licenses
 
-This implementation uses the functionality described in the [LinkedIn reference](https://www.linkedin.com/posts/shivakrishnavutukuri04_computervision-facerecognition-machinelearning-ugcPost-7514674406686633984-EAQi/) without copying its code or interface.
+Related demonstration: [face recognition attendance](https://www.linkedin.com/posts/shivakrishnavutukuri04_computervision-facerecognition-machinelearning-ugcPost-7514674406686633984-EAQi/).
 
 [facenet-pytorch](https://github.com/timesler/facenet-pytorch) provides the MIT-licensed InceptionResnetV1 implementation and links to pretrained VGGFace2 weights derived from David Sandberg’s FaceNet work. [MediaPipe](https://github.com/google-ai-edge/mediapipe) is Apache-2.0 licensed; model assets are downloaded from Google’s model distribution. Model weights and training datasets may have separate usage restrictions; verify their terms for the institution's intended deployment. Third-party packages retain their own licenses. Application source is under [MIT](LICENSE).

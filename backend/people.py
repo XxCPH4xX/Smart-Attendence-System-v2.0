@@ -101,9 +101,8 @@ def save_person(db, user, data, person=None):
     return person
 
 
-def revoke_biometrics(db, user, person_id, reason):
-    if not db.get(Person, person_id):
-        raise HTTPException(404, "Person not found")
+def clear_biometrics(db, person_id):
+    """Remove biometric data and revoke consent within the caller's transaction."""
     db.execute(delete(FaceTemplate).where(FaceTemplate.person_id == person_id))
     db.execute(delete(ProfilePhoto).where(ProfilePhoto.person_id == person_id))
     for consent in db.scalars(
@@ -111,5 +110,11 @@ def revoke_biometrics(db, user, person_id, reason):
     ):
         consent.revoked_at = utcnow()
     bump_index(db)
+
+
+def revoke_biometrics(db, user, person_id, reason):
+    if not db.get(Person, person_id):
+        raise HTTPException(404, "Person not found")
+    clear_biometrics(db, person_id)
     audit(db, user, "biometrics_revoked", "person", person_id, reason=reason)
     db.commit()

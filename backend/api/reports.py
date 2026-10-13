@@ -5,16 +5,9 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import func, select
 
-from backend.auth import (
-    audit,
-    require,
-)
+from backend.auth import audit, require
 from backend.db import get_db, utcnow
-from backend.models import (
-    AttendanceRecord,
-    AttendanceSession,
-    Person,
-)
+from backend.models import AttendanceRecord, AttendanceSession, Person
 from backend.reports import export_report, report_rows
 
 router = APIRouter()

@@ -322,7 +322,7 @@ def test_stability_supports_configured_processing_interval(
             )
         assert result["faces"][0]["stable"]
         assert result["faces"][0]["attendance_status"] == "pending_verification"
-        # A genuinely interrupted observation sequence must still start over.
+        # A gap beyond the configured limit must reset the observation streak.
         clock[0] += max(3, interval * 3)
         result = service.process_frame(db, db.get(User, 1), key, np.zeros((160, 160, 3), np.uint8))
         assert not result["faces"][0]["stable"]
