@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Browser session</title></head>
+<body>
+<script>
+  let operation;
+  const send = (type, values = {}) => window.parent.postMessage(
+    {isStreamlitMessage: true, type, ...values}, window.location.origin
+  );
+  window.addEventListener("message", async (event) => {
+    if (event.source !== window.parent || event.origin !== window.location.origin ||
+        event.data.type !== "streamlit:render") return;
+    const args = event.data.args;
+    if (operation === args.operation) return;
+    operation = args.operation;
+    const currentOperation = operation;
+    const endpoint = new URL(args.endpoint);
+    if (["127.0.0.1", "localhost"].includes(endpoint.hostname) &&
+        ["127.0.0.1", "localhost"].includes(window.location.hostname)) {
+      endpoint.hostname = window.location.hostname;
+    }
+    let ok = false;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        credentials: "include",
+        body: new URLSearchParams({ticket: args.ticket}),
+      });
+      ok = response.ok;
+    } catch (_) {
+      ok = false;
+    }
+    if (operation === currentOperation) {
+      send("streamlit:setComponentValue", {
+        value: {operation: currentOperation, ok}, dataType: "json"
+      });
+    }
+  });
+  send("streamlit:componentReady", {apiVersion: 1});
+  send("streamlit:setFrameHeight", {height: 0});
+</script>
+</body>
+</html>

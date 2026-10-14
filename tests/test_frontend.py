@@ -11,8 +11,18 @@ from frontend.client import APIError
 @pytest.fixture
 def ui_api(client, monkeypatch):
     import frontend.client as api
-    from frontend import attendance_actions, face_photos
-    from frontend.views import administration, analytics, home, live, people, schedules
+    from frontend import attendance_actions, face_photos, registration
+    from frontend.views import (
+        administration,
+        analytics,
+        directory,
+        enrollments,
+        home,
+        live,
+        operations,
+        people,
+        schedules,
+    )
 
     def request(method, path, **kwargs):
         response = client.request(method, path, **kwargs)
@@ -28,6 +38,10 @@ def ui_api(client, monkeypatch):
         api,
         attendance_actions,
         face_photos,
+        registration,
+        directory,
+        enrollments,
+        operations,
         administration,
         analytics,
         home,
@@ -39,90 +53,6 @@ def ui_api(client, monkeypatch):
     return request
 
 
-def test_dashboard_pages_use_live_api_data(client, person, attendance_session, monkeypatch, ui_api):
-    from frontend.views import live
-
-    client.post(
-        "/attendance/correct",
-        json={
-            "session_id": attendance_session["id"],
-            "person_id": person["id"],
-            "status": "present",
-            "check_in": attendance_session["starts_at"],
-            "reason": "Verified manual check-in",
-        },
-    )
-    app = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    app.session_state["token"] = "test-session"
-    app.run()
-    assert not app.exception
-    assert not app.error
-    pages = [button.label for button in app.sidebar.button if (button.key or "").startswith("nav_")]
-    assert pages == ["Home", "People", "Take attendance", "Records", "Settings"]
-    for page in pages:
-        next(button for button in app.sidebar.button if button.label == page).click().run()
-        assert not app.exception, (page, app.exception)
-        assert not app.error, (page, app.error)
-
-    tools = app.selectbox[0].options
-    for tool in tools:
-        app.selectbox[0].select(tool).run()
-        assert not app.exception, (tool, app.exception)
-        assert not app.error, (tool, app.error)
-
-    next(button for button in app.sidebar.button if button.label == "Home").click().run()
-    next(button for button in app.button if button.label == "Create test profile").click().run()
-    assert not app.exception
-    next(button for button in app.button if button.label == "Add my face").click().run()
-    assert app.session_state["page"] == "People"
-    assert app.session_state["people_action"] == "Enroll a face"
-    agree = next(button for button in app.button if button.label == "Agree and continue")
-    assert not agree.disabled
-    agree.click().run()
-    assert app.error[0].value == "Confirm permission before continuing."
-    next(box for box in app.checkbox if "informed permission" in box.label).check().run()
-    next(button for button in app.button if button.label == "Agree and continue").click().run()
-    assert not app.exception
-    assert not app.error
-    assert next(button for button in app.button if button.label == "Save face and finish").disabled
-    demo = next(
-        p for p in client.get("/people").json()["items"] if p["institutional_id"] == "DEMO-001"
-    )
-    assert not demo["enrolled"]
-    assert len(client.get(f"/people/{demo['id']}/enrollments").json()["consents"]) == 1
-
-    next(button for button in app.sidebar.button if button.label == "Take attendance").click().run()
-    assert not app.exception
-    assert not app.error
-    assert len(app.multiselect) == 0
-    assert any(button.label == "Start attendance station" for button in app.button)
-    assert any(expander.label == "Customize this station" for expander in app.expander)
-
-    client.app.state.vision.load = Mock()
-    monkeypatch.setattr(
-        live,
-        "webrtc_streamer",
-        lambda **kwargs: SimpleNamespace(
-            video_processor=None, state=SimpleNamespace(playing=False)
-        ),
-    )
-    next(
-        button for button in app.button if button.label == "Start attendance station"
-    ).click().run()
-    assert not app.exception
-    assert not app.error
-    assert len(app.multiselect) == 0
-    assert client.get("/station").json()["session"]["station"]
-    next(button for button in app.button if button.label == "Stop attendance station").click().run()
-    assert not app.exception
-    assert "stream_id" not in app.session_state
-    next(field for field in app.text_input if field.label == "Station name").set_value("Reception")
-    next(button for button in app.button if button.label == "Save station settings").click().run()
-    assert not app.exception
-    assert not app.error
-    assert client.get("/settings").json()["policy"]["station_name"] == "Reception"
-
-
 def test_sign_in_form_renders():
     app = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20).run()
     assert not app.exception
@@ -130,97 +60,28 @@ def test_sign_in_form_renders():
     assert app.text_input[1].label == "Password"
 
 
-def test_records_delete_reset_undo_and_counters(
-    client, person, attendance_session, session_payload, ui_api
-):
-    from test_attendance_deletions import period, record_arrival
+def test_refresh_restores_cookie_and_clear_session_does_not_restore_it_again(ui_api, monkeypatch):
+    from streamlit.runtime.context import ContextProxy
 
-    second = client.post("/sessions", json={**session_payload, "name": "Second class"}).json()
-    for session in (attendance_session, second):
-        record_arrival(client, session, person)
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = "Records"
-    ui.run()
-    buttons = [button for button in ui.button if button.label == "Delete record"]
-    assert len(buttons) == 2
-    buttons[0].click().run()
-    assert not ui.exception and not ui.error
-    assert len([button for button in ui.button if button.label == "Delete record"]) == 1
-    next(button for button in ui.button if button.label == "Reset attendance").click().run()
-    assert not ui.exception and not ui.error
-    assert client.get("/attendance", params=period(attendance_session)).json() == []
-    assert (
-        next(metric for metric in ui.metric if metric.label == "Recorded attendance rate").value
-        == "0.0%"
+    from backend.browser_sessions import cookie_name
+    from backend.config import get_settings
+
+    monkeypatch.setattr(
+        ContextProxy,
+        "cookies",
+        property(lambda self: {cookie_name(get_settings()): "existing-browser-session"}),
     )
-    assert next(button for button in ui.button if button.label == "Reset attendance").disabled
-    assert not any(button.label == "Delete record" for button in ui.button)
-    next(
-        button for button in ui.button if button.label == "Undo last attendance reset or deletion"
-    ).click().run()
+    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20).run()
     assert not ui.exception and not ui.error
-    assert (
-        next(metric for metric in ui.metric if metric.label == "Recorded attendance rate").value
-        == "100.0%"
-    )
-    next(button for button in ui.button if button.label == "Reset attendance").click().run()
-    next(button for button in ui.sidebar.button if button.label == "Home").click().run()
-    assert {metric.label: metric.value for metric in ui.metric} == {
-        "People registered": "1",
-        "Checked in": "0",
-        "Waiting for review": "0",
-    }
-
-
-def test_live_reset_stops_camera_and_clears_today(client, person, app, ui_api):
-    from test_attendance_deletions import record_arrival
-    from test_station import enroll_fixture
-
-    enroll_fixture(app, person["id"])
-    app.state.vision.load = Mock()
-    stream = client.post("/station/start").json()
-    station = client.get("/station").json()["session"]
-    record_arrival(client, station, person)
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = "Take attendance"
-    ui.run()
-    assert next(metric for metric in ui.metric if metric.label == "Checked in today").value == "1"
-    next(button for button in ui.button if button.label == "Reset today's attendance").click().run()
-    assert not ui.exception and not ui.error
-    assert next(metric for metric in ui.metric if metric.label == "Checked in today").value == "0"
-    assert next(metric for metric in ui.metric if metric.label == "Waiting for review").value == "0"
-    assert stream["stream_id"] not in app.state.vision.streams
-    assert client.get("/station").json()["enrolled_people"] == 1
-    assert next(button for button in ui.button if button.label == "Start attendance station")
-
-
-def test_custom_person_and_age_form(client, ui_api):
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = "People"
-    ui.session_state["people_action"] = "Add person"
-    ui.run()
-    assert not any(box.label == "This person is under 18" for box in ui.checkbox)
-    next(field for field in ui.selectbox if field.label == "Person type").set_value(
-        "Custom type…"
+    assert ui.session_state["token"] == "existing-browser-session"
+    assert any(button.label == "Overview" for button in ui.button)
+    isolated = AppTest.from_string(
+        "from frontend.browser_session import restore_session\n"
+        "from frontend.client import clear_session\n"
+        "restore_session()\nclear_session()\nrestore_session()"
     ).run()
-    next(field for field in ui.text_input if field.label == "Custom person type").set_value(
-        "Contractor"
-    ).run()
-    next(field for field in ui.text_input if field.label == "Full name").set_value(
-        "Test Contractor"
-    )
-    next(field for field in ui.text_input if field.label == "Student or employee ID").set_value(
-        "CONT-1"
-    )
-    next(field for field in ui.number_input if field.label == "Age (years)").set_value(25)
-    next(button for button in ui.button if button.label == "Save and add face").click().run()
-    assert not ui.exception and not ui.error
-    saved = client.get("/people", params={"q": "CONT-1"}).json()["items"][0]
-    assert saved["age"] == 25 and saved["person_type"] == "Contractor"
-    assert not saved["is_minor"]
+    assert not isolated.exception
+    assert "token" not in isolated.session_state
 
 
 @pytest.mark.parametrize("role", ["super_admin", "admin", "teacher", "staff_operator", "viewer"])
@@ -311,135 +172,248 @@ def test_scheduled_manual_checkin_preserves_start_seconds(
     assert updated["check_in"] == rows[0]["check_in"]
 
 
-def test_delete_selected_person_in_one_click_and_restore_history(
+def workspace(page="Overview", section=None):
+    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
+    ui.session_state["token"] = "test-session"
+    ui.session_state["page"] = page
+    if section:
+        ui.session_state["section_" + page] = section
+    return ui.run()
+
+
+def click(ui, label):
+    next(button for button in ui.button if button.label == label).click().run()
+    assert not ui.exception, ui.exception
+    assert not ui.error, ui.error
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "Students",
+        "Teachers",
+        "Staff",
+        "Enrollment",
+        "Attendance Operations",
+        "Reports & Analytics",
+        "Administration",
+        "System Settings",
+    ],
+)
+def test_all_workspace_sections_render(client, person, attendance_session, ui_api, page):
+    ui = workspace(page)
+    sections = [
+        button.label
+        for button in ui.button
+        if (button.key or "").startswith("section_" + page + "_")
+    ]
+    assert sections
+    for section in sections:
+        click(ui, section)
+
+
+def test_registration_draft_manual_custom_age_and_discard(client, ui_api):
+    ui = workspace("Enrollment")
+    click(ui, "Register other")
+    for label, value in [
+        ("Full name", "Test Contractor"),
+        ("Institutional ID", "CONT-1"),
+        ("Custom person type", "Contractor"),
+    ]:
+        next(field for field in ui.text_input if field.label == label).set_value(value)
+    ui.number_input[0].set_value(25)
+    click(ui, "Continue to institutional details")
+    ui.run()
+    assert client.get("/people").json()["total"] == 0
+    click(ui, "Continue to face enrollment")
+    ui.run()
+    click(ui, "Manual attendance")
+    click(ui, "Review registration")
+    ui.run()
+    assert client.get("/people").json()["total"] == 0
+    click(ui, "Confirm registration")
+    saved = client.get("/people").json()["items"][0]
+    assert saved["age"] == 25 and saved["person_type"] == "Contractor"
+    assert not saved["enrolled"] and not saved["is_minor"]
+    click(ui, "New registration")
+    click(ui, "Register student")
+    click(ui, "Discard draft")
+    assert client.get("/people").json()["total"] == 1
+
+
+def test_directory_profile_actions_and_category_isolation(
     client, person, attendance_session, ui_api
 ):
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = "People"
-    ui.run()
-    assert not any(button.label == "Delete person" for button in ui.button)
-    next(field for field in ui.selectbox if field.label == "Selected person").set_value(
-        person["id"]
-    ).run()
-    next(button for button in ui.button if button.label == "Delete person").click().run()
-    assert not ui.exception
-    assert not ui.error
-    assert not client.get(f"/people/{person['id']}").json()["active"]
-    assert client.get(f"/sessions/{attendance_session['id']}/roster").json() == [person["id"]]
-    next(field for field in ui.selectbox if field.label == "Show").set_value("Removed people").run()
-    next(field for field in ui.selectbox if field.label == "Selected person").set_value(
-        person["id"]
-    ).run()
-    next(button for button in ui.button if button.label == "Restore person").click().run()
-    assert not ui.error
-    assert client.get(f"/people/{person['id']}").json()["active"]
-
-
-def test_records_link_and_delete_keep_attendance(client, person, attendance_session, ui_api):
-    client.post(
-        "/attendance/correct",
+    staff = client.post(
+        "/people",
         json={
-            "session_id": attendance_session["id"],
-            "person_id": person["id"],
-            "status": "present",
-            "check_in": attendance_session["starts_at"],
-            "reason": "Arrival confirmed in person",
+            "full_name": "Staff Only",
+            "institutional_id": "STAFF-1",
+            "category": "staff",
+            "joined_on": "2026-01-01",
         },
-    )
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = "Records"
-    ui.run()
-    next(field for field in ui.selectbox if field.label == "Selected person").set_value(
-        person["id"]
-    ).run()
-    next(button for button in ui.button if button.label == "Open person details").click().run()
-    assert ui.session_state["page"] == "People"
-    assert (
-        next(field for field in ui.selectbox if field.label == "Selected person").value
-        == person["id"]
-    )
-    next(button for button in ui.sidebar.button if button.label == "Records").click().run()
-    next(field for field in ui.selectbox if field.label == "Selected person").set_value(
-        person["id"]
-    ).run()
-    next(button for button in ui.button if button.label == "Delete person").click().run()
-    assert not ui.exception
-    assert not ui.error
+    ).json()
+    ui = workspace("Students")
+    assert f"View profile_{person['id']}" in [b.key for b in ui.button]
+    assert f"View profile_{staff['id']}" not in [b.key for b in ui.button]
+    click(ui, "View profile")
+    assert not any((b.key or "").startswith("section_Students_") for b in ui.button)
+    for tab in [
+        "Personal info",
+        "Institution",
+        "Attendance",
+        "Face enrollment",
+        "Activity",
+        "Overview",
+    ]:
+        ui.button(key=f"profile_tab_{person['id']}_{tab}").click().run()
+        assert not ui.exception and not ui.error
+    click(ui, "Back to directory")
+    click(ui, "View profile")
+    click(ui, "Students")
+    assert any(b.key == f"View profile_{person['id']}" for b in ui.button)
+    click(ui, "Delete person")
+    assert client.get(f"/people/{person['id']}").json()["active"]
+    click(ui, "Cancel")
+    assert client.get(f"/people/{person['id']}").json()["active"]
+    click(ui, "Delete person")
+    click(ui, "Confirm")
     assert not client.get(f"/people/{person['id']}").json()["active"]
-    day = attendance_session["local_date"]
-    assert len(client.get("/attendance", params={"start": day, "end": day}).json()) == 1
+    next(field for field in ui.selectbox if field.label == "Status").set_value(
+        "Paused / removed"
+    ).run()
+    click(ui, "Restore check-ins")
+    click(ui, "Confirm")
+    assert client.get(f"/people/{person['id']}").json()["active"]
+    assert client.get(f"/sessions/{attendance_session['id']}/roster").json() == [person["id"]]
+
+
+def test_records_confirmation_delete_reset_undo_and_counters(
+    client, person, attendance_session, session_payload, ui_api
+):
+    from test_attendance_deletions import period, record_arrival
+
+    second = client.post("/sessions", json={**session_payload, "name": "Second class"}).json()
+    for session in (attendance_session, second):
+        record_arrival(client, session, person)
+    ui = workspace("Reports & Analytics")
+    click(ui, "Delete record")
+    assert len(client.get("/attendance", params=period(attendance_session)).json()) == 2
+    click(ui, "Confirm")
+    assert len(client.get("/attendance", params=period(attendance_session)).json()) == 1
+    click(ui, "Reset attendance")
+    click(ui, "Confirm")
+    assert client.get("/attendance", params=period(attendance_session)).json() == []
+    assert next(m for m in ui.metric if m.label == "Recorded attendance rate").value == "0.0%"
+    click(ui, "Undo last attendance reset or deletion")
+    assert next(m for m in ui.metric if m.label == "Recorded attendance rate").value == "100.0%"
+    click(ui, "Reset attendance")
+    click(ui, "Confirm")
+    click(ui, "Overview")
+    metrics = {m.label: m.value for m in ui.metric}
+    assert metrics["Total students"] == "1"
+    assert metrics["Present today"] == metrics["Late today"] == metrics["Pending reviews"] == "0"
+
+
+def test_live_reset_stops_camera_keeps_face_and_allows_restart(
+    client, person, app, ui_api, monkeypatch
+):
+    from test_attendance_deletions import record_arrival
+    from test_station import enroll_fixture
+
+    from frontend.views import live
+
+    enroll_fixture(app, person["id"])
+    app.state.vision.load = Mock()
+    stream = client.post("/station/start").json()
+    record_arrival(client, client.get("/station").json()["session"], person)
+    ui = workspace("Live Recognition")
+    assert next(m for m in ui.metric if m.label == "Checked in today").value == "1"
+    click(ui, "Reset today's attendance")
+    click(ui, "Confirm")
+    assert next(m for m in ui.metric if m.label == "Checked in today").value == "0"
+    assert stream["stream_id"] not in app.state.vision.streams
+    assert client.get("/station").json()["enrolled_people"] == 1
+    monkeypatch.setattr(
+        live,
+        "webrtc_streamer",
+        lambda **kwargs: SimpleNamespace(
+            video_processor=None, state=SimpleNamespace(playing=False)
+        ),
+    )
+    click(ui, "Start attendance station")
+    click(ui, "Refresh camera")
+    click(ui, "Stop attendance station")
+    assert "stream_id" not in ui.session_state
+
+
+def test_session_actions_confirm_reset_remove_and_restore(
+    client, person, attendance_session, ui_api
+):
+    from test_attendance_deletions import period, record_arrival
+
+    record_arrival(client, attendance_session, person)
+    ui = workspace("Attendance Operations", "Active sessions")
+    click(ui, "Remove session")
+    click(ui, "Cancel")
+    assert len(client.get("/sessions").json()) == 1
+    click(ui, "Reset attendance")
+    click(ui, "Confirm")
+    assert client.get("/attendance", params=period(attendance_session)).json() == []
+    click(ui, "Undo last attendance reset or deletion")
+    assert len(client.get("/attendance", params=period(attendance_session)).json()) == 1
+    click(ui, "Remove session")
+    click(ui, "Confirm")
+    assert client.get("/sessions").json() == []
+    assert len(client.get("/attendance", params=period(attendance_session)).json()) == 1
+    next(field for field in ui.checkbox if field.label == "Show removed sessions").set_value(
+        True
+    ).run()
+    click(ui, "Restore session")
+    assert len(client.get("/sessions").json()) == 1
 
 
 @pytest.mark.parametrize(
     "page,section,field,reset",
     [
-        ("People", "Add person", "Full name", "Reset form"),
-        ("Settings", "Login accounts", "New username", "Reset account form"),
-        ("Settings", "My account", "Current password", "Reset password form"),
-        ("Settings", "Schedules & organization", "Session name", "Reset session form"),
-        ("Settings", "Schedules & organization", "Leave reason", "Reset leave form"),
-        ("Settings", "Schedules & organization", "Holiday name", "Reset holiday form"),
-        ("Settings", "Schedules & organization", "Name", "Reset organization form"),
+        ("Administration", "User accounts", "New username", "Reset account form"),
+        ("Administration", "My account", "Current password", "Reset password form"),
+        ("Attendance Operations", "Active sessions", "Session name", "Reset session form"),
+        ("Attendance Operations", "Leave & holidays", "Leave reason", "Reset leave form"),
+        ("Attendance Operations", "Leave & holidays", "Holiday name", "Reset holiday form"),
+        ("Students", "Classes & sections", "Name", "Reset organization form"),
     ],
 )
-def test_reset_forms_keeps_saved_data(client, person, ui_api, page, section, field, reset):
-    before_people = client.get("/people").json()
-    before_accounts = client.get("/users").json()
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = page
-    ui.run()
-    if page == "People":
-        next(button for button in ui.button if button.label == section).click().run()
-    else:
-        next(widget for widget in ui.selectbox if widget.label == "Manage").set_value(section).run()
+def test_reset_forms_preserves_saved_data(client, person, ui_api, page, section, field, reset):
+    before = client.get("/people").json()
+    ui = workspace(page, section)
     next(widget for widget in ui.text_input if widget.label == field).set_value("Unsaved entry")
-    next(button for button in ui.button if button.label == reset).click().run()
-    assert not ui.exception
-    assert not ui.error
+    click(ui, reset)
     assert next(widget for widget in ui.text_input if widget.label == field).value == ""
-    assert ui.session_state["token"] == "test-session"
-    assert client.get("/people").json() == before_people
-    assert client.get("/users").json() == before_accounts
+    assert client.get("/people").json() == before
     for path in ["/sessions", "/leaves", "/holidays", "/catalog"]:
         assert client.get(path).json() == []
 
 
-def test_reset_filters_and_station_settings(client, person, ui_api):
-    ui = AppTest.from_file(str(Path("frontend/app.py").resolve()), default_timeout=20)
-    ui.session_state["token"] = "test-session"
-    ui.session_state["page"] = "People"
-    ui.run()
-    next(field for field in ui.text_input if field.label == "Find a person").set_value(
-        "missing name"
-    ).run()
-    assert any(caption.value == "0 people found" for caption in ui.caption)
-    next(button for button in ui.button if button.label == "Reset filters").click().run()
-    assert next(field for field in ui.text_input if field.label == "Find a person").value == ""
-    assert any(caption.value == "1 people found" for caption in ui.caption)
-    next(button for button in ui.sidebar.button if button.label == "Records").click().run()
-    next(field for field in ui.selectbox if field.label == "Show attendance for").set_value(
-        "Custom dates"
-    ).run()
-    next(field for field in ui.selectbox if field.label == "Category").set_value("Staff").run()
-    next(button for button in ui.button if button.label == "Clear filters").click().run()
-    assert (
-        next(field for field in ui.selectbox if field.label == "Show attendance for").value
-        == "Today"
-    )
-    assert next(field for field in ui.selectbox if field.label == "Category").value == "All"
-    next(button for button in ui.sidebar.button if button.label == "Take attendance").click().run()
+def test_clear_filters_and_dashboard_shortcuts(client, person, ui_api):
+    ui = workspace("Students")
+    ui.text_input[0].set_value("missing person").run()
+    click(ui, "Clear filters")
+    assert ui.text_input[0].value == ""
+    assert any(b.label == "View profile" for b in ui.button)
+    click(ui, "Overview")
+    click(ui, "View absent today")
+    assert next(s for s in ui.selectbox if s.label == "Attendance status").value == "absent"
+    click(ui, "Clear filters")
+    assert next(s for s in ui.selectbox if s.label == "Attendance status").value == "All"
+    click(ui, "Overview")
+    click(ui, "View present today")
+    assert next(s for s in ui.selectbox if s.label == "Attendance status").value == "present"
+    click(ui, "System Settings")
     saved = client.get("/settings").json()["policy"]
-    next(field for field in ui.text_input if field.label == "Station name").set_value(
-        "Unsaved station name"
-    )
-    next(button for button in ui.button if button.label == "Reset unsaved settings").click().run()
+    next(s for s in ui.text_input if s.label == "Station name").set_value("Unsaved")
+    click(ui, "Reset unsaved settings")
     assert (
-        next(field for field in ui.text_input if field.label == "Station name").value
-        == saved["station_name"]
+        next(s for s in ui.text_input if s.label == "Station name").value == saved["station_name"]
     )
     assert client.get("/settings").json()["policy"] == saved
-    assert not ui.exception
-    assert not ui.error

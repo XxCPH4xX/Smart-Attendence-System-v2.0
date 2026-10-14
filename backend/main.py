@@ -3,12 +3,14 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
 
 from backend.api import router
 from backend.biometrics import VisionService
+from backend.browser_sessions import BrowserSessionTickets, dashboard_origins
 from backend.config import get_settings
 from backend.db import make_engine, session_factory
 
@@ -51,7 +53,15 @@ def create_app(settings=None, engine=None):
     app.state.settings = settings
     app.state.sessions = session_factory(database)
     app.state.vision = vision
+    app.state.browser_sessions = BrowserSessionTickets()
     app.add_middleware(BodyLimit)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=dashboard_origins(settings),
+        allow_credentials=True,
+        allow_methods=["POST"],
+        allow_headers=["Content-Type"],
+    )
     app.include_router(router)
 
     @app.exception_handler(RequestValidationError)

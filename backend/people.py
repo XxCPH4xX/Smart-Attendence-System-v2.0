@@ -21,6 +21,14 @@ def get_policy(db):
     return PolicyInput(**(policy.values if policy else {}))
 
 
+def institution_context(db, settings):
+    policy = get_policy(db)
+    return {
+        "institution": policy.institution_name or settings.institution,
+        "timezone": policy.institution_timezone or settings.timezone,
+    }
+
+
 def bump_index(db):
     db.execute(update(Policy).where(Policy.id == 1).values(index_version=Policy.index_version + 1))
 
@@ -74,7 +82,7 @@ def person_dict(db, person):
     }
 
 
-def save_person(db, user, data, person=None):
+def save_person(db, user, data, person=None, *, commit=True):
     validate_catalog(db, data.department_id, "department")
     validate_catalog(db, data.details.class_id, "class")
     validate_catalog(db, data.details.shift_id, "shift")
@@ -115,7 +123,8 @@ def save_person(db, user, data, person=None):
         before=before,
         after=person_dict(db, person),
     )
-    db.commit()
+    if commit:
+        db.commit()
     return person
 
 

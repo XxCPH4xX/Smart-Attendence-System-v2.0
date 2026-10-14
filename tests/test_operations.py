@@ -29,6 +29,7 @@ def test_people_upgrade_preserves_existing_attendance_and_faces(
         "face_templates",
         "attendance_records",
         "attendance_events",
+        "attendance_sessions",
         "session_members",
         "audit_logs",
     ]
@@ -50,6 +51,11 @@ def test_people_upgrade_preserves_existing_attendance_and_faces(
                         tuple(row) for row in snapshots[table]
                     ]
                     assert rows[0][-2:] == (None, None)
+                elif table == "attendance_sessions":
+                    assert [tuple(row[:-1]) for row in rows] == [
+                        tuple(row) for row in snapshots[table]
+                    ]
+                    assert all(row[-1] is None for row in rows)
                 else:
                     assert rows == snapshots[table]
             assert db.execute(text("PRAGMA foreign_key_check")).all() == []

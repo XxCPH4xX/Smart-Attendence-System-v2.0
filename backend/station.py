@@ -30,7 +30,10 @@ def daily_station(db, user, timezone, now=None):
     now = now or utcnow()
     zone = ZoneInfo(timezone)
     day = now.astimezone(zone).date()
-    existing = db.scalar(select(AttendanceSession).where(AttendanceSession.station_day == day))
+    active_station = select(AttendanceSession).where(
+        AttendanceSession.station_day == day, AttendanceSession.archived_at.is_(None)
+    )
+    existing = db.scalar(active_station)
     if existing:
         return existing
     start = datetime.combine(day, time.min, zone)
@@ -55,7 +58,7 @@ def daily_station(db, user, timezone, now=None):
             audit(db, user, "station_day_opened", "session", session.id)
         db.commit()
     except IntegrityError:
-        session = db.scalar(select(AttendanceSession).where(AttendanceSession.station_day == day))
+        session = db.scalar(active_station)
         if session is None:
             raise
     return session

@@ -17,7 +17,7 @@ from backend.attendance import recognized_checkin
 from backend.auth import audit
 from backend.db import utcnow
 from backend.models import Consent, Enrollment, FaceTemplate, Person, Policy
-from backend.people import bump_index, get_policy
+from backend.people import bump_index, get_policy, institution_context
 from vision.recognition import RecognitionIndex, normalize
 from vision.tracking import StabilityTracker
 
@@ -149,6 +149,9 @@ class VisionService:
                         result.update(
                             person_id=person.id,
                             name=person.full_name,
+                            institutional_id=person.institutional_id,
+                            category=person.category,
+                            person_type=person.custom_type or person.category.title(),
                             label=f"{person.custom_type or person.category.title()} | {person.institutional_id}",
                             feedback="Recognized; waiting for stable observations",
                         )
@@ -159,7 +162,7 @@ class VisionService:
             results.append(result)
         return results
 
-    def enroll(self, db, user, person_id, consent_id, images):
+    def enroll(self, db, user, person_id, consent_id, images, *, commit=True):
         person = db.scalar(select(Person).where(Person.id == person_id).with_for_update())
         consent = db.get(Consent, consent_id)
         if not person or not person.active:
@@ -229,8 +232,11 @@ class VisionService:
                 person_id,
                 after={"samples": len(vectors), "enrollment_id": enrollment.id},
             )
-            db.commit()
-            self.refresh(db)
+            if commit:
+                db.commit()
+                self.refresh(db)
+            else:
+                db.flush()
             return {
                 "enrollment_id": enrollment.id,
                 "samples": len(vectors),
@@ -280,7 +286,9 @@ class VisionService:
             if stream.get("station"):
                 from backend.station import daily_station
 
-                session = daily_station(db, user, self.settings.timezone)
+                session = daily_station(
+                    db, user, institution_context(db, self.settings)["timezone"]
+                )
                 stream["session_id"] = session.id
             flags = stream["tracker"].update([(f["box"], f["person_id"]) for f in faces], started)
             for face, stable in zip(faces, flags, strict=True):
@@ -296,7 +304,11 @@ class VisionService:
                         f"{key}:{stream['session_id']}:{face['person_id']}",
                     )
                     face.update(
-                        feedback=feedback, record_id=record.id, attendance_status=record.status
+                        feedback=feedback,
+                        record_id=record.id,
+                        attendance_status=record.status,
+                        check_in=record.check_in.isoformat() if record.check_in else None,
+                        check_out=record.check_out.isoformat() if record.check_out else None,
                     )
                 except HTTPException as error:
                     face["feedback"] = str(error.detail)
@@ -306,6 +318,7 @@ class VisionService:
             return {
                 "faces": faces,
                 "latency_ms": round((time.monotonic() - started) * 1000, 1),
+                "observed_at": utcnow().isoformat(),
                 "index_version": self.index.version,
                 "error": None,
             }

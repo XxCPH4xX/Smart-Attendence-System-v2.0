@@ -6,7 +6,7 @@ from backend.auth import audit, require
 from backend.biometrics import decode_image
 from backend.db import get_db, utcnow
 from backend.models import AttendanceSession, FaceTemplate
-from backend.people import get_policy
+from backend.people import get_policy, institution_context
 from backend.schemas import StreamInput
 from backend.station import daily_station, enrolled_people
 
@@ -20,8 +20,14 @@ def station_status(request: Request, user=Depends(require("read")), db=Depends(g
     from backend.attendance import session_dict
 
     now = utcnow()
-    day = now.astimezone(ZoneInfo(request.app.state.settings.timezone)).date()
-    session = db.scalar(select(AttendanceSession).where(AttendanceSession.station_day == day))
+    day = now.astimezone(
+        ZoneInfo(institution_context(db, request.app.state.settings)["timezone"])
+    ).date()
+    session = db.scalar(
+        select(AttendanceSession).where(
+            AttendanceSession.station_day == day, AttendanceSession.archived_at.is_(None)
+        )
+    )
     return {
         "date": day.isoformat(),
         "enrolled_people": db.scalar(
@@ -36,7 +42,9 @@ def start_station(request: Request, user=Depends(require("camera")), db=Depends(
     service = request.app.state.vision
     with service.lock:
         service.load()
-        session = daily_station(db, user, request.app.state.settings.timezone)
+        session = daily_station(
+            db, user, institution_context(db, request.app.state.settings)["timezone"]
+        )
         key = service.create_stream(user, session.id, get_policy(db), station=True)
         audit(db, user, "station_camera_started", "session", session.id)
         db.commit()
@@ -83,13 +91,17 @@ def quality_check(
 def new_stream(
     data: StreamInput, request: Request, user=Depends(require("camera")), db=Depends(get_db)
 ):
-    session = lookup(db, AttendanceSession, data.session_id)
-    if session.finalized or not session.starts_at <= utcnow() <= session.cutoff_at:
-        raise HTTPException(409, "Select a session with an open check-in window")
     service = request.app.state.vision
     with service.lock:
+        session = lookup(db, AttendanceSession, data.session_id)
+        if (
+            session.archived_at
+            or session.finalized
+            or not session.starts_at <= utcnow() <= session.cutoff_at
+        ):
+            raise HTTPException(409, "Select an active session with an open check-in window")
         service.load()
-    key = service.create_stream(user, session.id, get_policy(db))
+        key = service.create_stream(user, session.id, get_policy(db))
     audit(db, user, "camera_started", "session", session.id)
     db.commit()
     return {"stream_id": key}

@@ -145,6 +145,7 @@ class AttendanceSession(Base):
     grace_minutes: Mapped[int] = mapped_column(default=10)
     checkout_enabled: Mapped[bool] = mapped_column(default=False)
     finalized: Mapped[bool] = mapped_column(default=False)
+    archived_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
 
 
@@ -224,4 +225,10 @@ class AuditLog(Base):
 
 
 Index("ix_session_date_category", AttendanceSession.local_date, AttendanceSession.category)
-Index("ix_station_day", AttendanceSession.station_day, unique=True)
+Index(
+    "ix_station_day",
+    AttendanceSession.station_day,
+    unique=True,
+    sqlite_where=AttendanceSession.archived_at.is_(None),
+    postgresql_where=AttendanceSession.archived_at.is_(None),
+)

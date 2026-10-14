@@ -4,8 +4,8 @@ from sqlalchemy import select
 from backend.auth import audit, require
 from backend.db import get_db
 from backend.models import AuditLog, Policy
-from backend.people import get_policy
-from backend.schemas import PolicyInput
+from backend.people import get_policy, institution_context
+from backend.schemas import InstitutionInput, PolicyInput
 
 router = APIRouter()
 
@@ -15,8 +15,7 @@ def settings(request: Request, user=Depends(require("read")), db=Depends(get_db)
     policy = get_policy(db)
     return {
         "policy": policy.model_dump(),
-        "institution": request.app.state.settings.institution,
-        "timezone": request.app.state.settings.timezone,
+        **institution_context(db, request.app.state.settings),
         "device": request.app.state.settings.device,
         "station_staff_verification_required": not policy.station_auto_mark,
         "scheduled_staff_verification_required": True,
@@ -33,6 +32,22 @@ def update_settings(data: PolicyInput, user=Depends(require("settings")), db=Dep
     audit(db, user, "settings_changed", "policy", 1, before=previous, after=policy.values)
     db.commit()
     return policy.values
+
+
+@router.put("/institution")
+def update_institution(
+    data: InstitutionInput, request: Request, user=Depends(require("settings")), db=Depends(get_db)
+):
+    policy = db.get(Policy, 1)
+    before = institution_context(db, request.app.state.settings)
+    policy.values = {
+        **get_policy(db).model_dump(),
+        "institution_name": data.name,
+        "institution_timezone": data.timezone,
+    }
+    audit(db, user, "institution_updated", "institution", 1, before=before, after=data.model_dump())
+    db.commit()
+    return institution_context(db, request.app.state.settings)
 
 
 @router.get("/audit")

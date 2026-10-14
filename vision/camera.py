@@ -63,12 +63,12 @@ class RemoteProcessor:
                 content=jpeg.tobytes(),
                 headers={"Content-Type": "image/jpeg"},
             )
-            if response.status_code == 404 and self.station:
-                restart = self.client.post("/station/start")
-                if restart.status_code == 201:
-                    self.stream_id = restart.json()["stream_id"]
-                    return {"faces": [], "error": None}
-                response = restart
+            if response.status_code in {401, 403, 404}:
+                return {
+                    "faces": [],
+                    "stopped": True,
+                    "error": "The camera session ended or was reset. Start the station again to resume check-ins.",
+                }
             if response.status_code != 200:
                 detail = response.json().get("detail", "Recognition unavailable")
                 return {"faces": [], "error": str(detail)}
@@ -90,7 +90,11 @@ class RemoteProcessor:
                 self.result = self.pending.result()
                 self.last_result = now
                 self.pending = None
-            if not self.pending and now - self.last_submit >= self.interval:
+            if (
+                not self.pending
+                and not self.result.get("stopped")
+                and now - self.last_submit >= self.interval
+            ):
                 self.pending = self.executor.submit(self.infer, image.copy())
                 self.last_submit = now
             faces = self.result.get("faces", []) if now - self.last_result < 2 else []

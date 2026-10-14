@@ -1,6 +1,17 @@
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select
 
 from backend.api.common import lookup
@@ -9,6 +20,7 @@ from backend.biometrics import cipher, decode_image
 from backend.db import get_db
 from backend.models import (
     AttendanceRecord,
+    AuditLog,
     Consent,
     Enrollment,
     FaceTemplate,
@@ -26,7 +38,7 @@ from backend.people import (
     save_person,
     type_condition,
 )
-from backend.schemas import ConsentInput, PersonInput, ReasonInput
+from backend.schemas import Category, ConsentInput, PersonInput, ReasonInput, RegistrationInput
 
 router = APIRouter()
 
@@ -34,11 +46,14 @@ router = APIRouter()
 @router.get("/people")
 def people(
     q: str = "",
-    category: str | None = None,
+    category: Category | None = None,
     person_type: str | None = None,
     department_id: int | None = None,
     class_id: int | None = None,
     section: str | None = None,
+    academic_year: str | None = None,
+    semester: str | None = None,
+    shift_id: int | None = None,
     active: bool | None = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
@@ -59,6 +74,9 @@ def people(
         (Person.department_id, department_id),
         (PersonDetails.class_id, class_id),
         (PersonDetails.section, section),
+        (PersonDetails.academic_year, academic_year),
+        (PersonDetails.semester, semester),
+        (PersonDetails.shift_id, shift_id),
         (Person.active, active),
     ]:
         if value is not None:
@@ -88,8 +106,94 @@ def person_types(user=Depends(require("read")), db=Depends(get_db)):
 
 
 @router.get("/people/{person_id}")
-def person(person_id: int, user=Depends(require("read")), db=Depends(get_db)):
-    return person_dict(db, lookup(db, Person, person_id))
+def person(
+    person_id: int,
+    category: Category | None = None,
+    user=Depends(require("read")),
+    db=Depends(get_db),
+):
+    entry = lookup(db, Person, person_id)
+    if category is not None and entry.category != category:
+        raise HTTPException(404, "Person not found in this directory")
+    return person_dict(db, entry)
+
+
+@router.get("/people/{person_id}/activity")
+def person_activity(person_id: int, user=Depends(require("audit")), db=Depends(get_db)):
+    lookup(db, Person, person_id)
+    attendance_ids = select(AttendanceRecord.id).where(AttendanceRecord.person_id == person_id)
+    from sqlalchemy import String, cast
+
+    query = (
+        select(AuditLog)
+        .where(
+            ((AuditLog.entity == "person") & (AuditLog.entity_id == str(person_id)))
+            | (
+                (AuditLog.entity == "attendance")
+                & AuditLog.entity_id.in_(
+                    select(cast(AttendanceRecord.id, String)).where(
+                        AttendanceRecord.id.in_(attendance_ids)
+                    )
+                )
+            )
+        )
+        .order_by(AuditLog.id.desc())
+        .limit(50)
+    )
+    return [
+        {"action": entry.action, "created_at": entry.created_at, "reason": entry.reason}
+        for entry in db.scalars(query)
+    ]
+
+
+@router.post("/registrations", status_code=201)
+def register_person(
+    request: Request,
+    payload: str = Form(...),
+    files: list[UploadFile] = File(default=[]),
+    user=Depends(require("people")),
+    db=Depends(get_db),
+):
+    try:
+        data = RegistrationInput.model_validate_json(payload)
+    except ValidationError as error:
+        raise HTTPException(
+            422, [{key: issue[key] for key in ("loc", "msg", "type")} for issue in error.errors()]
+        ) from error
+    if data.manual_attendance and files:
+        raise HTTPException(422, "Choose manual attendance or face enrollment, not both")
+    if not data.manual_attendance and (not data.consent or not 3 <= len(files) <= 12):
+        raise HTTPException(
+            422, "Confirm permission and provide 3–12 photos, or choose manual attendance"
+        )
+    images = [file.file.read(request.app.state.settings.max_upload_bytes + 1) for file in files]
+    if any(len(image) > request.app.state.settings.max_upload_bytes for image in images):
+        raise HTTPException(413, "An enrollment image is too large")
+    service = request.app.state.vision
+    with service.lock:
+        try:
+            entry = save_person(db, user, data.person, commit=False)
+            if not data.manual_attendance:
+                authorization = Consent(
+                    person_id=entry.id, recorded_by=user.id, **data.consent.model_dump()
+                )
+                db.add(authorization)
+                db.flush()
+                audit(
+                    db,
+                    user,
+                    "consent_recorded",
+                    "person",
+                    entry.id,
+                    after={"consent_id": authorization.id},
+                )
+                service.enroll(db, user, entry.id, authorization.id, images, commit=False)
+            db.commit()
+        except Exception:
+            db.rollback()
+            service.index_loaded_at = float("-inf")
+            raise
+    return person_dict(db, entry)
 
 
 @router.put("/people/{person_id}")

@@ -1,165 +1,9 @@
-from datetime import date
-from zoneinfo import ZoneInfo
-
 import streamlit as st
 
-from backend.db import utcnow
-from frontend.client import can, people_options, person_label, request
-from frontend.controls import (
-    control_key,
-    delete_person_button,
-    people_table,
-    reset_button,
-    reset_section,
-)
+from frontend.client import can, person_label, request
+from frontend.controls import control_key, reset_button
 from frontend.face_photos import clear_photos, photo_editor
-from frontend.navigation import navigate, option_buttons, redirect
-
-
-def person_form(person=None):
-    person = person or {}
-    scope = f"person_form_{person.get('id', 'new')}"
-    reset_button(scope, label="Reset form")
-    details = person.get("details", {})
-    catalog = request("GET", "/catalog")
-    config = request("GET", "/settings")
-    types = request("GET", "/people/types")
-    selected_type = person.get("person_type", "Student")
-    choices = [*types, "Custom type…"]
-    if person.get("category") == "other":
-        choices = [choice for choice in choices if choice not in {"Student", "Teacher", "Staff"}]
-    selected_type = st.selectbox(
-        "Person type",
-        choices,
-        index=choices.index(selected_type),
-        disabled=bool(person) and person.get("category") != "other",
-        key=control_key(scope, "category"),
-    )
-    custom_type = None
-    if selected_type == "Custom type…":
-        custom_type = st.text_input(
-            "Custom person type",
-            placeholder="For example: Contractor or Visitor",
-            max_chars=80,
-            key=control_key(scope, "custom_type"),
-        )
-        category = "other"
-    elif selected_type in {"Student", "Teacher", "Staff", "Other"}:
-        category = selected_type.lower()
-    else:
-        category, custom_type = "other", selected_type
-
-    def catalog_select(label, kind, selected):
-        options = {None: "Not set", **{c["id"]: c["name"] for c in catalog if c["kind"] == kind}}
-        return st.selectbox(
-            label,
-            list(options),
-            format_func=options.get,
-            index=list(options).index(selected) if selected in options else 0,
-        )
-
-    with st.form(control_key(scope, "form")):
-        a, b = st.columns(2)
-        name = a.text_input("Full name", person.get("full_name", ""), max_chars=160)
-        institutional_id = b.text_input(
-            "Student or employee ID",
-            person.get("institutional_id", ""),
-            max_chars=80,
-            help="A unique ID, such as STU-1001.",
-        )
-        age = st.number_input(
-            "Age (years)",
-            min_value=0,
-            max_value=120,
-            value=person.get("age"),
-            step=1,
-            help="People under 18 require guardian authorization before face enrollment.",
-        )
-        with st.expander("Optional details"):
-            a, b = st.columns(2)
-            with a:
-                email = st.text_input("Email", person.get("email") or "")
-                phone = st.text_input("Phone", person.get("phone") or "")
-                department = catalog_select("Department", "department", person.get("department_id"))
-                joined = st.date_input(
-                    "Joining date",
-                    date.fromisoformat(person["joined_on"])
-                    if person
-                    else utcnow().astimezone(ZoneInfo(config["timezone"])).date(),
-                )
-                active = st.checkbox("Allow this person to check in", person.get("active", True))
-                notes = st.text_area("Notes", person.get("notes", ""), max_chars=3000)
-            with b:
-                specific = {}
-                if category == "student":
-                    specific["student_id"] = (
-                        st.text_input("Additional student ID", details.get("student_id") or "")
-                        or None
-                    )
-                    specific["class_id"] = catalog_select(
-                        "Class / program", "class", details.get("class_id")
-                    )
-                    for field, label in [
-                        ("section", "Section"),
-                        ("academic_year", "Academic year"),
-                        ("semester", "Semester"),
-                        ("roll_number", "Roll number"),
-                    ]:
-                        specific[field] = st.text_input(label, details.get(field) or "") or None
-                else:
-                    specific["employee_id"] = (
-                        st.text_input("Additional employee ID", details.get("employee_id") or "")
-                        or None
-                    )
-                    specific["designation"] = (
-                        st.text_input("Job title", details.get("designation") or "") or None
-                    )
-                    specific["shift_id"] = catalog_select(
-                        "Assigned shift", "shift", details.get("shift_id")
-                    )
-                    if category == "teacher":
-                        courses = {c["id"]: c["name"] for c in catalog if c["kind"] == "course"}
-                        specific["assigned_courses"] = st.multiselect(
-                            "Assigned courses",
-                            list(courses),
-                            default=details.get("assigned_courses", []),
-                            format_func=courses.get,
-                        )
-        submitted = st.form_submit_button(
-            "Save changes" if person else "Save and add face", type="primary"
-        )
-    if submitted:
-        if not name.strip() or not institutional_id.strip():
-            st.error("Enter a full name and a unique ID to continue.")
-            return None
-        if age is None:
-            st.error("Enter this person's age to continue.")
-            return None
-        if selected_type == "Custom type…" and not custom_type.strip():
-            st.error("Enter a custom person type to continue.")
-            return None
-        data = dict(
-            institutional_id=institutional_id,
-            full_name=name,
-            category=category,
-            custom_type=custom_type,
-            age=age,
-            email=email or None,
-            phone=phone or None,
-            department_id=department,
-            active=active,
-            joined_on=joined.isoformat(),
-            is_minor=age < 18,
-            notes=notes,
-            details=specific,
-        )
-        saved = request(
-            "PUT" if person else "POST",
-            f"/people/{person['id']}" if person else "/people",
-            json=data,
-        )
-        return saved
-    return None
+from frontend.navigation import open_page
 
 
 def enrollment(person):
@@ -178,10 +22,14 @@ def enrollment(person):
     )
     st.subheader(person_label(person))
     if not person["active"]:
-        st.info("Restore this person from People → Removed people before adding face samples.")
+        st.info("Restore check-in access from the person’s directory before adding face samples.")
         return
     history = request("GET", f"/people/{person_id}/enrollments")
-    consents = [c for c in history["consents"] if not c["revoked_at"]]
+    consents = [
+        c
+        for c in history["consents"]
+        if not c["revoked_at"] and (not person["is_minor"] or c["guardian"])
+    ]
     replacing = st.session_state.get(f"replace_face_{person_id}", False)
     if person["enrolled"] and not replacing:
         st.success("Face enrollment is complete. This person is ready for attendance.")
@@ -189,8 +37,8 @@ def enrollment(person):
             st.button(
                 "Take attendance",
                 type="primary",
-                on_click=navigate,
-                args=("Take attendance", person_id),
+                on_click=open_page,
+                args=("Live Recognition",),
             )
         if st.button("Replace face samples"):
             st.session_state[f"replace_face_{person_id}"] = True
@@ -269,163 +117,3 @@ def enrollment(person):
                 clear_photos(person_id)
                 st.session_state.pop(f"replace_face_{person_id}", None)
                 st.rerun()
-
-
-def directory():
-    scope = "directory"
-    reset_button(scope, label="Reset filters")
-    target = st.session_state.pop("directory_target", None)
-    if target:
-        reset_section(scope, ())
-        person = request("GET", f"/people/{target}")
-        st.session_state[control_key(scope, "search")] = person["institutional_id"]
-        st.session_state[control_key(scope, "state")] = "Everyone"
-        st.session_state[control_key(scope, "person")] = target
-    a, b = st.columns([2, 1])
-    q = a.text_input(
-        "Find a person", placeholder="Search by name or ID", key=control_key(scope, "search")
-    )
-    category = b.selectbox(
-        "Person type",
-        ["All", *request("GET", "/people/types")],
-        key=control_key(scope, "category"),
-    )
-    params = dict(q=q, limit=25)
-    if category != "All":
-        params["person_type"] = category
-    with st.expander("More filters"):
-        catalog = request("GET", "/catalog")
-        state = st.selectbox(
-            "Show",
-            ["Registered people", "Removed people", "Everyone"],
-            key=control_key(scope, "state"),
-        )
-        department = st.selectbox(
-            "Department",
-            [None, *[c for c in catalog if c["kind"] == "department"]],
-            format_func=lambda c: c["name"] if c else "All departments",
-            key=control_key(scope, "department"),
-        )
-        class_entry = st.selectbox(
-            "Class",
-            [None, *[c for c in catalog if c["kind"] == "class"]],
-            format_func=lambda c: c["name"] if c else "All classes",
-            key=control_key(scope, "class"),
-        )
-        section = st.text_input("Section", key=control_key(scope, "section"))
-        params["sort"] = st.selectbox(
-            "Sort by",
-            ["name", "id"],
-            format_func=lambda x: "Name" if x == "name" else "ID",
-            key=control_key(scope, "sort"),
-        )
-        if state != "Everyone":
-            params["active"] = state == "Registered people"
-        if department:
-            params["department_id"] = department["id"]
-        if class_entry:
-            params["class_id"] = class_entry["id"]
-        if section:
-            params["section"] = section
-    page = st.number_input("Page", min_value=1, value=1, step=1, key=control_key(scope, "page"))
-    params["offset"] = (page - 1) * 25
-    response = request("GET", "/people", params=params)
-    st.caption(f"{response['total']} people found")
-    items = response["items"]
-    options = {p["id"]: p for p in items}
-    selected = people_table(
-        [
-            {
-                "Name": p["full_name"],
-                "ID": p["institutional_id"],
-                "Type": p["person_type"],
-                "Status": "Registered" if p["active"] else "Removed",
-                "Face": "Ready" if p["enrolled"] else "Not added",
-            }
-            for p in items
-        ],
-        [p["id"] for p in items],
-        options,
-        scope,
-    )
-    if selected is None:
-        return
-    person = options[selected]
-    if can("privacy") and person["active"]:
-        delete_person_button(person, "People")
-    if can("enroll") and person["active"]:
-        st.button(
-            "Manage this person's face",
-            on_click=navigate,
-            args=("People", selected, "Enroll a face"),
-        )
-    if can("people") and st.toggle(
-        "Edit this person's details", key=control_key(scope, f"edit_{selected}")
-    ):
-        if person_form(person):
-            st.session_state.notice = "Person updated."
-            st.rerun()
-    if can("people") and not person["active"]:
-        st.info("This person has been removed. Their past records remain available.")
-        if st.button("Restore person"):
-            data = {
-                key: value
-                for key, value in person.items()
-                if key not in {"id", "enrolled", "person_type"}
-            }
-            request("PUT", f"/people/{selected}", json={**data, "active": True})
-            st.session_state.notice = (
-                "Person restored. Add their face again to use camera attendance."
-            )
-            st.rerun()
-    if can("people"):
-        with st.expander("Profile photo"):
-            if st.button("View profile photo"):
-                st.image(request("GET", f"/people/{selected}/photo"), width=240)
-            photo = st.file_uploader(
-                "Choose a profile photo",
-                type=["jpg", "jpeg", "png"],
-                key=control_key(scope, f"photo_{selected}"),
-            )
-            if photo and st.button("Save profile photo"):
-                request(
-                    "POST",
-                    f"/people/{selected}/photo",
-                    files={"file": (photo.name, photo.getvalue())},
-                )
-                st.success("Profile photo saved")
-
-
-def render():
-    actions = ["Find people"]
-    if can("people"):
-        actions.append("Add person")
-    if can("enroll"):
-        actions.append("Enroll a face")
-    action = option_buttons("What would you like to do?", actions, key="people_action")
-    if action == "Add person":
-        st.caption("Start with a name and ID. You can fill in other details later.")
-        saved = person_form()
-        if saved:
-            st.session_state.notice = (
-                "Person saved. Next, add their face or return to the directory."
-            )
-            redirect("People", saved["id"], "Enroll a face" if can("enroll") else "Find people")
-    elif action == "Enroll a face":
-        options = people_options(active=True)
-        if not options:
-            st.info("Add a person first, then come back here to enroll their face.")
-            st.button("Add a person", on_click=navigate, args=("People", None, "Add person"))
-            return
-        selected = st.session_state.get("selected_person")
-        if selected not in options:
-            st.session_state.selected_person = next(iter(options))
-        person_id = st.selectbox(
-            "Choose person",
-            list(options),
-            key="selected_person",
-            format_func=lambda i: person_label(options[i]),
-        )
-        enrollment(options[person_id])
-    else:
-        directory()

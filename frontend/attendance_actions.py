@@ -3,6 +3,22 @@ import streamlit as st
 from frontend.client import APIError, request
 
 
+def confirm_delete(params=None, record=None):
+    from frontend.design import confirmation
+
+    label = "Delete this attendance record?" if record else "Reset attendance for this selection?"
+    selection = (
+        f"{record['full_name']} · {record['date']} · {record['session']}. "
+        if record
+        else f"Attendance from {params['start']} through {params['end']}, matching the current filters. "
+    )
+    detail = (
+        selection
+        + "People and saved faces are kept. Affected cameras stop. Deleted attendance can be restored for 30 days."
+    )
+    confirmation(label, detail, delete_attendance, kwargs={"params": params, "record": record})
+
+
 def delete_attendance(params=None, record=None):
     from frontend.views.live import stop_stream
 
@@ -37,18 +53,27 @@ def restore_attendance(deletion_id):
         st.session_state.notice_error = str(error)
 
 
-def undo_button():
+def undo_button(allowed_ids=None):
     last = st.session_state.get("last_attendance_deletion")
-    if last:
+    if last and (allowed_ids is None or last in allowed_ids):
         st.button(
             "Undo last attendance reset or deletion", on_click=restore_attendance, args=(last,)
         )
 
 
-def recovery_controls():
-    undo_button()
+def recovery_controls(category=None, person_id=None):
+    params = {
+        key: value
+        for key, value in {"category": category, "person_id": person_id}.items()
+        if value is not None
+    }
+    entries = request("GET", "/attendance-deletions", params=params)
+    undo_button({entry["id"] for entry in entries})
     with st.expander("Recently deleted attendance"):
-        entries = request("GET", "/attendance-deletions")
+        if category or person_id:
+            st.caption(
+                "Only deletion groups entirely within this profile or category are shown. Mixed-category groups are available in Reports & Analytics."
+            )
         st.caption(
             "Deleted attendance can be restored for 30 days. New check-ins will not be overwritten."
         )

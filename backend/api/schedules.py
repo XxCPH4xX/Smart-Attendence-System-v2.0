@@ -1,17 +1,26 @@
 from datetime import date
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import func, select
 
 from backend import attendance
 from backend.api.common import lookup
 from backend.auth import audit, require
-from backend.db import get_db
-from backend.models import AttendanceSession, Catalog, Holiday, Leave, Person, SessionMember
+from backend.db import get_db, utcnow
+from backend.models import (
+    AttendanceRecord,
+    AttendanceSession,
+    Catalog,
+    Holiday,
+    Leave,
+    Person,
+    SessionMember,
+)
 from backend.people import get_policy
 from backend.schemas import (
     CatalogInput,
+    Category,
     CorrectionInput,
     HolidayInput,
     LeaveInput,
@@ -54,20 +63,95 @@ def update_catalog(
 
 
 @router.get("/sessions")
-def sessions(user=Depends(require("read")), db=Depends(get_db)):
+def sessions(
+    category: Category | None = None,
+    archived: bool = False,
+    user=Depends(require("read")),
+    db=Depends(get_db),
+):
+    query = select(AttendanceSession)
+    query = query.where(
+        AttendanceSession.archived_at.is_not(None)
+        if archived
+        else AttendanceSession.archived_at.is_(None)
+    )
+    if category is not None:
+        query = query.where(AttendanceSession.category == category)
+    entries = list(db.scalars(query.order_by(AttendanceSession.starts_at.desc()).limit(500)))
+    counts = dict(
+        db.execute(
+            select(AttendanceRecord.session_id, func.count())
+            .where(AttendanceRecord.session_id.in_([entry.id for entry in entries]))
+            .group_by(AttendanceRecord.session_id)
+        ).all()
+    )
     return [
-        attendance.session_dict(s)
-        for s in db.scalars(
-            select(AttendanceSession).order_by(AttendanceSession.starts_at.desc()).limit(500)
-        )
+        {**attendance.session_dict(entry), "record_count": counts.get(entry.id, 0)}
+        for entry in entries
     ]
 
 
+@router.delete("/sessions/{session_id}")
+def remove_session(
+    session_id: int, request: Request, user=Depends(require("schedule")), db=Depends(get_db)
+):
+    service = request.app.state.vision
+    with service.lock:
+        session = attendance.get_session(db, session_id)
+        if not session.archived_at:
+            before = attendance.session_dict(session)
+            session.archived_at = utcnow()
+            audit(
+                db,
+                user,
+                "session_removed",
+                "session",
+                session.id,
+                before=before,
+            )
+            db.commit()
+        service.stop_sessions({session.id})
+    return {"removed": True}
+
+
+@router.post("/sessions/{session_id}/restore")
+def restore_session(
+    session_id: int, request: Request, user=Depends(require("schedule")), db=Depends(get_db)
+):
+    with request.app.state.vision.lock:
+        session = attendance.get_session(db, session_id)
+        if session.archived_at:
+            if session.station_day is not None and db.scalar(
+                select(AttendanceSession.id).where(
+                    AttendanceSession.station_day == session.station_day,
+                    AttendanceSession.archived_at.is_(None),
+                )
+            ):
+                raise HTTPException(
+                    409,
+                    "A daily station already exists for this date. Its removed session's records remain in Reports.",
+                )
+            session.archived_at = None
+            audit(db, user, "session_restored", "session", session.id)
+            db.commit()
+    return attendance.session_dict(session)
+
+
 @router.get("/sessions/{session_id}/roster")
-def roster(session_id: int, user=Depends(require("read")), db=Depends(get_db)):
+def roster(
+    session_id: int,
+    category: Category | None = None,
+    user=Depends(require("read")),
+    db=Depends(get_db),
+):
     session = lookup(db, AttendanceSession, session_id)
+    if category is not None and session.station_day is None and session.category != category:
+        raise HTTPException(404, "Session not found in this category")
     if session.station_day is not None:
-        return list(db.scalars(select(Person.id).where(Person.active.is_(True))))
+        query = select(Person.id).where(Person.active.is_(True))
+        if category is not None:
+            query = query.where(Person.category == category)
+        return list(db.scalars(query))
     return list(
         db.scalars(select(SessionMember.person_id).where(SessionMember.session_id == session_id))
     )
@@ -137,7 +221,17 @@ def remove_holiday(day: date, user=Depends(require("schedule")), db=Depends(get_
 
 
 @router.get("/leaves")
-def leaves(user=Depends(require("read")), db=Depends(get_db)):
+def leaves(
+    category: Category | None = None,
+    person_id: int | None = None,
+    user=Depends(require("read")),
+    db=Depends(get_db),
+):
+    query = select(Leave).join(Person, Person.id == Leave.person_id)
+    if category is not None:
+        query = query.where(Person.category == category)
+    if person_id is not None:
+        query = query.where(Person.id == person_id)
     return [
         {
             "id": leave.id,
@@ -146,7 +240,7 @@ def leaves(user=Depends(require("read")), db=Depends(get_db)):
             "ends_on": leave.ends_on,
             "reason": leave.reason,
         }
-        for leave in db.scalars(select(Leave).order_by(Leave.starts_on.desc()).limit(500))
+        for leave in db.scalars(query.order_by(Leave.starts_on.desc()).limit(500))
     ]
 
 

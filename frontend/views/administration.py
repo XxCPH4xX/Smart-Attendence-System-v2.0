@@ -1,7 +1,8 @@
 import streamlit as st
 
-from frontend.client import clear_session, request
+from frontend.client import can, clear_session, request
 from frontend.controls import control_key, reset_button
+from frontend.design import confirmation
 
 
 def users():
@@ -38,8 +39,13 @@ def users():
         "Removing login access signs this account out and prevents future sign-ins. Past changes remain in the change history."
     )
     if st.button("Remove login access" if selected["active"] else "Restore login access"):
-        request("PATCH", f"/users/{selected['id']}", params={"active": not selected["active"]})
-        st.rerun()
+        confirmation(
+            "Change login access?",
+            "Removing access ends active sessions for this account.",
+            request,
+            args=("PATCH", f"/users/{selected['id']}"),
+            kwargs={"params": {"active": not selected["active"]}},
+        )
     st.caption(
         "Password recovery requires local administrator access: attendance reset-password. Changing or resetting a password expires every session for that account."
     )
@@ -88,17 +94,10 @@ def settings(system=False):
     policy = dict(config["policy"])
     st.caption(f"{config['institution']} · {config['timezone']} · {config['device'].upper()}")
     if system:
-        st.info(
-            "Institution name, timezone and compute device are environment settings. Edit .env and restart the services to apply them. Existing sessions retain their own timezone."
+        st.caption(
+            "Retention changes apply to future cleanup. Existing templates keep their original expiry date."
         )
         with st.form(control_key(scope, "form")):
-            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-            policy["working_days"] = st.multiselect(
-                "Institution working days",
-                list(range(7)),
-                default=policy["working_days"],
-                format_func=lambda i: days[i],
-            )
             policy["template_retention_days"] = st.number_input(
                 "Template retention (days, for new enrollments)",
                 min_value=1,
@@ -111,7 +110,7 @@ def settings(system=False):
                 max_value=3650,
                 value=policy["attendance_retention_days"],
             )
-            if st.form_submit_button("Save retention and working days"):
+            if st.form_submit_button("Save retention policy"):
                 request("PUT", "/settings", json=policy)
                 st.success("System policy saved")
         st.code(
@@ -123,7 +122,7 @@ def settings(system=False):
         )
     else:
         st.warning(
-            "Similarity scores are not probabilities. The default threshold is provisional until evaluated on authorized local data. Daily station marking and staff review can be configured on Take attendance. Face matching does not prove liveness."
+            "Similarity scores are not probabilities. The default threshold is provisional until evaluated on authorized local data. Daily station marking and staff review can be configured under Camera configuration. Face matching does not prove liveness."
         )
         with st.form(control_key(scope, "form")):
             a, b = st.columns(2)
@@ -175,3 +174,124 @@ def evaluation():
     st.write(
         "The dashboard uses cosine matching as a provisional baseline. ANN and KNN are experimental comparisons until your evaluation supports changing the operational method. StandardScaler and an MLP are not enabled without evidence that they improve open-set decisions."
     )
+
+
+def institution():
+    from zoneinfo import available_timezones
+
+    config = request("GET", "/settings")
+    reset_button("institution", label="Reset unsaved changes")
+    with st.form(control_key("institution", "form")):
+        name = st.text_input("Institution name", config["institution"], max_chars=120)
+        zones = sorted(available_timezones())
+        timezone = st.selectbox(
+            "Institution timezone", zones, index=zones.index(config["timezone"])
+        )
+        st.caption(
+            "New sessions use this timezone. Existing sessions keep their original timezone and timestamps."
+        )
+        if st.form_submit_button("Save institution", type="primary"):
+            request("PUT", "/institution", json={"name": name, "timezone": timezone})
+            st.session_state.notice = "Institution settings saved."
+            st.rerun()
+
+
+def roles():
+    from backend.auth import PERMISSIONS
+
+    st.caption(
+        "Permissions are enforced by the API. Teacher access covers institution-wide reports; it is not limited to an assigned class."
+    )
+    labels = {
+        "read": "View records",
+        "people": "Manage profiles",
+        "enroll": "Enroll faces",
+        "camera": "Live camera",
+        "correct": "Correct attendance",
+        "schedule": "Schedules & leave",
+        "export": "Export reports",
+        "delete_attendance": "Delete attendance",
+        "privacy": "Delete people & biometrics",
+        "settings": "System settings",
+        "users": "Login accounts",
+        "audit": "Audit history",
+    }
+    st.dataframe(
+        [
+            {
+                "Permission": label,
+                **{
+                    role.replace("_", " ").title(): "✓" if permission in permissions else "—"
+                    for role, permissions in PERMISSIONS.items()
+                },
+            }
+            for permission, label in labels.items()
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+
+def render_admin():
+    from frontend.navigation import section_tabs
+
+    sections = ["My account", "Roles & permissions"]
+    if can("users"):
+        sections.insert(0, "User accounts")
+    if can("settings"):
+        sections.append("Institution")
+    if can("audit"):
+        sections.append("Audit logs")
+    selected = section_tabs(sections, "Administration")
+    {
+        "My account": account,
+        "Roles & permissions": roles,
+        "User accounts": users,
+        "Institution": institution,
+        "Audit logs": audit,
+    }[selected]()
+
+
+def render_system():
+    from frontend.navigation import section_tabs
+    from frontend.views.live import station_settings
+
+    sections = ["Recognition status"]
+    if can("settings"):
+        sections = [
+            "Camera configuration",
+            "Recognition settings",
+            "Attendance policies",
+            "Privacy & retention",
+            *sections,
+        ]
+    selected = section_tabs(sections, "System Settings")
+    if selected == "Recognition status":
+        evaluation()
+    elif selected == "Camera configuration":
+        station_settings(request("GET", "/settings")["policy"])
+    elif selected == "Recognition settings":
+        settings()
+    elif selected == "Attendance policies":
+        config = request("GET", "/settings")
+        policy = config["policy"]
+        reset_button("attendance_policy", label="Reset unsaved changes")
+        with st.form(control_key("attendance_policy", "form")):
+            days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            policy["working_days"] = st.multiselect(
+                "Working days",
+                list(range(7)),
+                default=policy["working_days"],
+                format_func=lambda value: days[value],
+            )
+            policy["station_auto_mark"] = st.toggle(
+                "Mark stable face matches automatically", policy["station_auto_mark"]
+            )
+            st.caption(
+                "Disable automatic marking to require staff review at the daily station. Scheduled sessions always require review. Grace periods and checkout rules are set per scheduled session."
+            )
+            if st.form_submit_button("Save attendance policy", type="primary"):
+                request("PUT", "/settings", json=policy)
+                st.success("Attendance policy saved.")
+    else:
+        settings(True)

@@ -79,6 +79,8 @@ def recognized_checkin(db, user, session_id, person_id, event_key, now=None):
     """Only server-side, temporally stable vision results call this entry point."""
     now = now or utcnow()
     session = get_session(db, session_id)
+    if session.archived_at:
+        raise HTTPException(409, "This session was removed. Restore it before taking attendance.")
     if session.station_day is not None:
         from backend.station import enrolled_people
 
@@ -130,6 +132,8 @@ def correct(db, user, data):
     if data.check_out and not session.checkout_enabled:
         raise HTTPException(409, "Checkout is disabled for this session")
     record = find_record(db, session.id, data.person_id)
+    if session.archived_at and not record:
+        raise HTTPException(409, "Restore this session before adding attendance")
     if (record.version if record else 0) != data.expected_version:
         raise HTTPException(409, "Record changed. Refresh before correcting it.")
     before = record_snapshot(record)
@@ -208,6 +212,8 @@ def approve(db, user, record_id, reason):
 def finalize(db, user, session_id, now=None):
     now = now or utcnow()
     session = get_session(db, session_id)
+    if session.archived_at:
+        raise HTTPException(409, "Restore this session before finalizing attendance")
     if session.station_day is not None:
         raise HTTPException(
             409, "Daily stations record arrivals only; use a scheduled roster for absences"
@@ -266,4 +272,5 @@ def session_dict(session):
         "grace_minutes": session.grace_minutes,
         "checkout_enabled": session.checkout_enabled,
         "finalized": session.finalized,
+        "archived": session.archived_at is not None,
     }

@@ -29,6 +29,9 @@ attendance = "scripts.manage:main"
 [tool.setuptools.packages.find]
 include = ["backend*", "vision*", "frontend*", "scripts*"]
 
+[tool.setuptools.package-data]
+frontend = ["components/session/*.html"]
+
 [tool.uv]
 environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'", "sys_platform == 'win32' and platform_machine == 'AMD64'", "sys_platform == 'linux' and platform_machine == 'x86_64'"]
 

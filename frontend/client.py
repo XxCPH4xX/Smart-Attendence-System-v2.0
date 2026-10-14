@@ -1,4 +1,5 @@
 import re
+import secrets
 
 import httpx
 import streamlit as st
@@ -75,6 +76,8 @@ def clear_session():
     if processor:
         processor.close()
     st.session_state.clear()
+    st.session_state.browser_session_checked = True
+    st.session_state.clear_browser_cookie = secrets.token_urlsafe(16)
 
 
 def can(permission):

@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     timezone: str = "Asia/Dhaka"
     institution: str = "Attendance Office"
     api_url: str = "http://127.0.0.1:8000"
+    dashboard_url: str = "http://127.0.0.1:8501"
     device: str = "cpu"
     asset_dir: Path = Path("assets")
     session_hours: int = 8

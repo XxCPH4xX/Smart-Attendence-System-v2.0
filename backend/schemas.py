@@ -101,6 +101,8 @@ class PersonInput(Input):
             if self.custom_type.casefold() in {c.value for c in Category}:
                 raise ValueError("Choose the existing person type instead of adding it again")
         d = self.details
+        if d.assigned_courses and self.category != Category.TEACHER:
+            raise ValueError("Assigned teaching courses only apply to teachers")
         if self.category == Category.STUDENT:
             if d.employee_id or d.designation or d.shift_id:
                 raise ValueError("Employee fields do not apply to students")
@@ -113,6 +115,26 @@ class ConsentInput(Input):
     basis: str = Field(pattern=r"^(explicit_consent|institutional_authorization)$")
     statement: str = Field(min_length=20, max_length=3000)
     guardian: str | None = Field(default=None, max_length=160)
+
+
+class RegistrationInput(Input):
+    person: PersonInput
+    consent: ConsentInput | None = None
+    manual_attendance: bool = False
+
+
+class InstitutionInput(Input):
+    name: str = Field(min_length=2, max_length=120)
+    timezone: str = Field(max_length=80)
+
+    @field_validator("timezone")
+    @classmethod
+    def timezone_exists(cls, value):
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as error:
+            raise ValueError("Choose a valid timezone, such as Asia/Dhaka") from error
+        return value
 
 
 class SessionInput(Input):
@@ -193,6 +215,8 @@ class LeaveInput(Input):
 
 
 class PolicyInput(Input):
+    institution_name: str | None = Field(default=None, min_length=2, max_length=120)
+    institution_timezone: str | None = Field(default=None, max_length=80)
     station_name: str = Field(default="Live attendance station", min_length=2, max_length=100)
     station_auto_mark: bool = True
     similarity_threshold: float = Field(default=0.8, ge=0.5, le=0.99)
@@ -206,6 +230,11 @@ class PolicyInput(Input):
     working_days: list[int] = Field(default_factory=lambda: [0, 1, 2, 3, 4])
     min_face_pixels: int = Field(default=70, ge=40, le=300)
     min_blur_variance: float = Field(default=40, ge=10, le=500)
+
+    @field_validator("institution_timezone")
+    @classmethod
+    def timezone_exists(cls, value):
+        return InstitutionInput.timezone_exists(value) if value else None
 
     @field_validator("working_days")
     @classmethod

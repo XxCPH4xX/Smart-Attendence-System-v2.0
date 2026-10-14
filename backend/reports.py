@@ -44,6 +44,10 @@ def report_rows(
     section=None,
     person_type=None,
     session_id=None,
+    status=None,
+    academic_year=None,
+    semester=None,
+    shift_id=None,
 ):
     query = (
         select(AttendanceRecord, AttendanceSession, Person, Catalog.name)
@@ -63,6 +67,10 @@ def report_rows(
         (Person.id == person_id, person_id),
         (PersonDetails.class_id == class_id, class_id),
         (PersonDetails.section == section, section),
+        (AttendanceRecord.status == status, status),
+        (PersonDetails.academic_year == academic_year, academic_year),
+        (PersonDetails.semester == semester, semester),
+        (PersonDetails.shift_id == shift_id, shift_id),
     ]:
         if value is not None:
             query = query.where(condition)

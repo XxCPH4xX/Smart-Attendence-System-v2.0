@@ -9,8 +9,9 @@ from backend.attendance_deletions import RECOVERY_DAYS, remove_records, restore_
 from backend.auth import audit, require
 from backend.db import get_db, utcnow
 from backend.models import AttendanceDeletion, AttendanceRecord, AttendanceSession, Person
+from backend.people import institution_context
 from backend.reports import export_report, report_rows
-from backend.schemas import AttendanceDeleteInput
+from backend.schemas import AttendanceDeleteInput, Category, Status
 
 router = APIRouter()
 
@@ -18,13 +19,17 @@ router = APIRouter()
 def filters(
     start: date,
     end: date,
-    category: str | None = None,
+    category: Category | None = None,
     department_id: int | None = None,
     person_id: int | None = None,
     class_id: int | None = None,
     section: str | None = None,
     person_type: str | None = None,
     session_id: int | None = None,
+    status: Status | None = None,
+    academic_year: str | None = None,
+    semester: str | None = None,
+    shift_id: int | None = None,
 ):
     if end < start or (end - start).days > 366:
         raise HTTPException(422, "Choose an ordered report period of at most 366 days")
@@ -38,6 +43,10 @@ def filters(
         section=section,
         person_type=person_type,
         session_id=session_id,
+        status=status,
+        academic_year=academic_year,
+        semester=semester,
+        shift_id=shift_id,
     )
 
 
@@ -74,6 +83,10 @@ def reset_attendance(
                 "class_id",
                 "section",
                 "person_type",
+                "status",
+                "academic_year",
+                "semester",
+                "shift_id",
             )
         ):
             sessions.update(session.id for session in candidates)
@@ -106,7 +119,20 @@ def delete_record(
 
 
 @router.get("/attendance-deletions")
-def deleted_records(user=Depends(require("delete_attendance")), db=Depends(get_db)):
+def deleted_records(
+    category: Category | None = None,
+    person_id: int | None = None,
+    user=Depends(require("delete_attendance")),
+    db=Depends(get_db),
+):
+    people_query = select(Person.id)
+    if category is not None:
+        people_query = people_query.where(Person.category == category)
+    if person_id is not None:
+        people_query = people_query.where(Person.id == person_id)
+    permitted = (
+        set(db.scalars(people_query)) if category is not None or person_id is not None else None
+    )
     return [
         {
             "id": entry.id,
@@ -121,9 +147,10 @@ def deleted_records(user=Depends(require("delete_attendance")), db=Depends(get_d
                 AttendanceDeletion.created_at >= utcnow() - timedelta(days=RECOVERY_DAYS),
             )
             .order_by(AttendanceDeletion.created_at.desc())
-            .limit(50)
+            .limit(500)
         )
-    ]
+        if permitted is None or all(row["person_id"] in permitted for row in entry.records)
+    ][:50]
 
 
 @router.post("/attendance-deletions/{deletion_id}/restore")
@@ -147,7 +174,9 @@ def export(
 ):
     rows = report_rows(db, **params)
     labels = "; ".join(f"{key}: {value}" for key, value in params.items() if value is not None)
-    content, media_type = export_report(rows, kind, request.app.state.settings.institution, labels)
+    content, media_type = export_report(
+        rows, kind, institution_context(db, request.app.state.settings)["institution"], labels
+    )
     audit(db, user, "report_exported", "report", kind, after={"rows": len(rows), "filters": labels})
     db.commit()
     return Response(
@@ -160,7 +189,8 @@ def export(
 @router.get("/overview")
 def overview(request: Request, user=Depends(require("read")), db=Depends(get_db)):
     now = utcnow()
-    today = now.astimezone(ZoneInfo(request.app.state.settings.timezone)).date()
+    context = institution_context(db, request.app.state.settings)
+    today = now.astimezone(ZoneInfo(context["timezone"])).date()
     counts = dict(
         db.execute(
             select(Person.category, func.count())
@@ -198,6 +228,5 @@ def overview(request: Request, user=Depends(require("read")), db=Depends(get_db)
         "checked_in_people": checked_in_people,
         "active_sessions": active_sessions,
         "date": today,
-        "institution": request.app.state.settings.institution,
-        "timezone": request.app.state.settings.timezone,
+        **context,
     }

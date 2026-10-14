@@ -37,7 +37,11 @@ def run(api_port=8000, dashboard_port=8501):
     children = []
     api_url = f"http://127.0.0.1:{api_port}"
     dashboard_url = f"http://127.0.0.1:{dashboard_port}"
-    environment = {**os.environ, "ATTENDANCE_API_URL": api_url}
+    environment = {
+        **os.environ,
+        "ATTENDANCE_API_URL": api_url,
+        "ATTENDANCE_DASHBOARD_URL": dashboard_url,
+    }
     services = [
         (
             "Backend",

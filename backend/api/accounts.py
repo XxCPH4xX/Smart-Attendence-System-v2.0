@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response
 from sqlalchemy import delete, select
 
 from backend.api.common import lookup, user_view
 from backend.auth import audit, current_user, digest, hasher, login, require, verify_password
-from backend.db import get_db
+from backend.browser_sessions import cookie_name, dashboard_origins
+from backend.db import get_db, utcnow
 from backend.models import LoginSession, User
 from backend.schemas import LoginInput, PasswordInput, UserInput
 
@@ -25,6 +26,54 @@ def sign_in(data: LoginInput, request: Request, db=Depends(get_db)):
 @router.get("/auth/me")
 def me(user=Depends(current_user)):
     return user_view(user)
+
+
+@router.post("/auth/browser-session-ticket")
+def browser_session_ticket(request: Request, user=Depends(current_user)):
+    token = request.headers["authorization"].split(" ", 1)[1]
+    return {"ticket": request.app.state.browser_sessions.issue(token)}
+
+
+def check_browser_origin(request):
+    if request.headers.get("origin") not in dashboard_origins(request.app.state.settings):
+        raise HTTPException(403, "Open the attendance dashboard to manage your browser session")
+
+
+@router.post("/auth/browser-session")
+def save_browser_session(
+    request: Request, response: Response, ticket: str = Form(max_length=100), db=Depends(get_db)
+):
+    check_browser_origin(request)
+    token = request.app.state.browser_sessions.consume(ticket)
+    session = db.get(LoginSession, digest(token)) if token else None
+    now = utcnow()
+    if not session or session.expires_at <= now:
+        raise HTTPException(401, "Sign-in confirmation expired. Please sign in again.")
+    user = db.get(User, session.user_id)
+    if not user or not user.active:
+        raise HTTPException(401, "Account disabled")
+    response.set_cookie(
+        cookie_name(request.app.state.settings),
+        token,
+        max_age=max(1, int((session.expires_at - now).total_seconds())),
+        expires=session.expires_at,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+    )
+    return {"saved": True}
+
+
+@router.post("/auth/browser-session/clear")
+def clear_browser_session(request: Request, response: Response):
+    check_browser_origin(request)
+    response.delete_cookie(
+        cookie_name(request.app.state.settings),
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="strict",
+    )
+    return {"cleared": True}
 
 
 @router.post("/auth/logout", status_code=204)

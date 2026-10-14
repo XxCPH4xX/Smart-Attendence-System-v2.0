@@ -6,10 +6,10 @@ import plotly.express as px
 import streamlit as st
 
 from backend.db import utcnow
-from frontend.attendance_actions import delete_attendance, recovery_controls
+from frontend.attendance_actions import confirm_delete, recovery_controls
 from frontend.client import can, people_options, person_label, request
-from frontend.controls import control_key, delete_person_button, reset_button
-from frontend.navigation import navigate
+from frontend.controls import control_key, reset_button
+from frontend.design import badge, empty
 
 COLORS = {
     "present": "#246B5B",
@@ -102,12 +102,13 @@ def trends(rows):
     )
 
 
-def history(category=None, export=False):
-    scope = "history"
+def history(category=None, export=False, person_id=None):
+    scope = f"history_{category or 'all'}_{person_id or 'all'}"
+    preset = st.session_state.get("page_filters", {})
     actions = st.container()
     config = request("GET", "/settings")
     today = utcnow().astimezone(ZoneInfo(config["timezone"])).date()
-    period_column, type_column = st.columns(2)
+    period_column, type_column, status_column = st.columns(3)
     period = period_column.selectbox(
         "Show attendance for",
         ["Today", "This week", "This month", "Custom dates"],
@@ -136,7 +137,29 @@ def history(category=None, export=False):
         )
         if selected != "All":
             params["person_type"] = selected
-    with st.expander("Filter by person, department or class"):
+    statuses = [
+        "All",
+        "present",
+        "late",
+        "absent",
+        "pending_verification",
+        "on_leave",
+        "excused",
+        "holiday",
+    ]
+    selected_status = status_column.selectbox(
+        "Attendance status",
+        statuses,
+        index=statuses.index(preset.get("status", "All")),
+        format_func=lambda value: value.replace("_", " ").title(),
+        key=control_key(scope, "status"),
+    )
+    if selected_status != "All":
+        params["status"] = selected_status
+    if category:
+        type_column.caption("Directory scope")
+        type_column.write(category.title() + " only")
+    with st.expander("More filters", icon=":material/tune:"):
         catalog = request("GET", "/catalog")
         a, b, c = st.columns(3)
         departments = {
@@ -149,46 +172,72 @@ def history(category=None, export=False):
             format_func=departments.get,
             key=control_key(scope, "department"),
         )
-        classes = {
-            None: "All classes",
-            **{e["id"]: e["name"] for e in catalog if e["kind"] == "class"},
-        }
-        class_id = b.selectbox(
-            "Class / program",
-            list(classes),
-            format_func=classes.get,
-            key=control_key(scope, "class"),
-        )
-        section = c.text_input("Section", key=control_key(scope, "section"))
-        for key, value in [
-            ("department_id", department),
-            ("class_id", class_id),
-            ("section", section or None),
-        ]:
-            if value is not None:
-                params[key] = value
+        if department is not None:
+            params["department_id"] = department
+        if category in {None, "student"}:
+            classes = {
+                None: "All classes",
+                **{e["id"]: e["name"] for e in catalog if e["kind"] == "class"},
+            }
+            class_id = b.selectbox(
+                "Class / program",
+                list(classes),
+                format_func=classes.get,
+                key=control_key(scope, "class"),
+            )
+            section = c.text_input("Section", key=control_key(scope, "section"))
+            academic = st.text_input("Academic session", key=control_key(scope, "academic"))
+            semester = st.text_input("Semester", key=control_key(scope, "semester"))
+            params.update(
+                {
+                    key: value
+                    for key, value in {
+                        "class_id": class_id,
+                        "section": section,
+                        "academic_year": academic,
+                        "semester": semester,
+                    }.items()
+                    if value
+                }
+            )
+        else:
+            shifts = {
+                None: "All shifts",
+                **{e["id"]: e["name"] for e in catalog if e["kind"] == "shift"},
+            }
+            shift = b.selectbox(
+                "Shift", list(shifts), format_func=shifts.get, key=control_key(scope, "shift")
+            )
+            if shift:
+                params["shift_id"] = shift
         options = people_options(category)
         selected_person = st.selectbox(
             "Individual",
             [None, *options],
             format_func=lambda i: "All people" if i is None else person_label(options[i]),
             key=control_key(scope, "individual"),
+            disabled=person_id is not None,
         )
         if selected_person:
             params["person_id"] = selected_person
+    if person_id is not None:
+        params["person_id"] = person_id
+    if end < start or (end - start).days > 366:
+        st.warning("Choose dates in order, covering no more than 366 days.")
+        return
     rows = request("GET", "/attendance", params=params)
     with actions:
         reset, clear = st.columns(2)
         if can("delete_attendance"):
             reset.button(
                 "Reset attendance",
-                on_click=delete_attendance,
+                on_click=confirm_delete,
                 kwargs={"params": params},
                 disabled=not rows,
                 help="Clear attendance matching the selected dates and filters. Registered people and saved faces stay available.",
             )
         with clear:
-            reset_button(scope, label="Clear filters")
+            reset_button(scope, label="Clear filters", clear_keys=("page_filters",))
     st.caption(f"{len(rows)} attendance records · {start} to {end}")
     if rows:
         pages = (len(rows) + 24) // 25
@@ -205,11 +254,29 @@ def history(category=None, export=False):
                 person_column, session_column, status_column, action_column = st.columns(
                     [2, 1.6, 1.4, 1.1]
                 )
-                person_column.text(row["full_name"])
+                from frontend.views.directory import open_profile
+
+                person_column.button(
+                    row["full_name"],
+                    key=f"record_profile_{row['record_id']}",
+                    type="tertiary",
+                    on_click=open_profile,
+                    args=(row["category"], row["person_id"]),
+                )
                 person_column.caption(f"{row['institutional_id']} · {row['person_type']}")
                 session_column.text(row["date"])
                 session_column.caption(row["session"])
-                status_column.text(row["status"].replace("_", " ").title())
+                with status_column:
+                    badge(
+                        row["status"].replace("_", " ").title(),
+                        "good"
+                        if row["status"] == "present"
+                        else "bad"
+                        if row["status"] == "absent"
+                        else "warn"
+                        if row["status"] in {"late", "pending_verification"}
+                        else "muted",
+                    )
                 if row["check_in"]:
                     status_column.caption(
                         "In: " + datetime.fromisoformat(row["check_in"]).strftime("%I:%M %p")
@@ -222,35 +289,16 @@ def history(category=None, export=False):
                     action_column.button(
                         "Delete record",
                         key=f"delete_record_{row['record_id']}",
-                        on_click=delete_attendance,
+                        on_click=confirm_delete,
                         kwargs={"record": row},
                         help=f"Delete this attendance entry for {row['full_name']}",
                         use_container_width=True,
                     )
-    row_ids = [row["person_id"] for row in rows]
-    people = {i: options[i] for i in dict.fromkeys(row_ids) if i in options}
-    picker_key = control_key(scope, "person")
-    if st.session_state.get(picker_key) not in people:
-        st.session_state[picker_key] = None
-    selected_id = None
-    if people:
-        with st.expander("Open or manage a person's profile"):
-            selected_id = st.selectbox(
-                "Selected person",
-                list(people),
-                index=None,
-                placeholder="Choose a person",
-                format_func=lambda key: person_label(people[key]),
-                key=picker_key,
-            )
-    if selected_id is not None:
-        st.button(
-            "Open person details", on_click=navigate, args=("People", selected_id, "Find people")
-        )
-        if can("privacy") and people[selected_id]["active"]:
-            delete_person_button(people[selected_id], "Records")
     if not rows:
-        st.info("No attendance recorded for these filters yet.")
+        empty(
+            "No attendance for this selection",
+            "Change the dates or filters, or start a recognition session.",
+        )
     counted = [r for r in rows if r["status"] in {"present", "late", "absent"}]
     rate = (
         100 * sum(r["status"] in {"present", "late"} for r in counted) / len(counted)
@@ -265,8 +313,8 @@ def history(category=None, export=False):
         with st.expander("Charts and trends"):
             trends(rows)
     if can("delete_attendance"):
-        recovery_controls()
-    if can("export") and (export or rows):
+        recovery_controls(category, person_id)
+    if can("export"):
         kind = st.selectbox(
             "Export format", ["csv", "xlsx", "pdf"], key=control_key(scope, "export")
         )

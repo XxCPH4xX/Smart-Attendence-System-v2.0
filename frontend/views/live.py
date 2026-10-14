@@ -1,18 +1,21 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
 from backend.config import get_settings
 from backend.db import utcnow
-from frontend.attendance_actions import delete_attendance, undo_button
-from frontend.client import can, request
+from frontend.attendance_actions import confirm_delete, undo_button
+from frontend.client import APIError, can, request
 from frontend.controls import control_key, reset_button
+from frontend.design import empty, person_identity
+from frontend.navigation import open_page
 from vision.camera import RemoteProcessor
 
 
 def station_settings(policy):
-    with st.expander("Customize this station"):
+    with st.expander("Camera & station configuration", expanded=True):
         st.caption(
             "Choose a camera using the camera selector in the live preview. Stop the station before changing its settings."
         )
@@ -55,7 +58,7 @@ def station_settings(policy):
                     st.session_state.notice = "Station settings saved."
                     st.rerun()
         st.caption(
-            "For matching sensitivity, image quality and resolution, open Settings → Camera settings."
+            "For matching sensitivity, image quality and resolution, open System Settings → Recognition settings."
         )
 
 
@@ -69,14 +72,51 @@ def stop_stream():
         request("DELETE", f"/vision/streams/{stream_id}")
 
 
+def capture_activity(result, timezone):
+    observed = result.get("observed_at") or utcnow().isoformat()
+    timestamp = datetime.fromisoformat(observed).astimezone(ZoneInfo(timezone)).strftime("%H:%M:%S")
+    current = set()
+    events = st.session_state.setdefault("live_events", [])
+    previous = st.session_state.get("live_event_signatures", set())
+    entries = result.get("faces", [])
+    if result.get("error"):
+        entries = [{"name": "Camera", "feedback": result["error"], "status": "error"}]
+    for face in entries:
+        signature = (
+            face.get("person_id"),
+            face.get("status"),
+            face.get("attendance_status"),
+            face.get("feedback"),
+        )
+        current.add(signature)
+        if signature not in previous:
+            events.insert(
+                0,
+                {
+                    "Time": timestamp,
+                    "Person": face.get("name", "Unknown"),
+                    "Event": face.get("feedback", ""),
+                    "Status": (face.get("attendance_status") or face.get("status", "waiting"))
+                    .replace("_", " ")
+                    .title(),
+                },
+            )
+        if face.get("person_id"):
+            st.session_state.live_latest = {**face, "observed_at": observed}
+    st.session_state.live_event_signatures = current
+    del events[50:]
+
+
+def clear_live_activity():
+    for key in ("live_events", "live_event_signatures", "live_latest"):
+        st.session_state.pop(key, None)
+
+
 def render():
     config = request("GET", "/settings")
     policy = config["policy"]
     running = bool(st.session_state.get("stream_id"))
-    st.subheader(policy["station_name"])
-    st.write(
-        "One camera for everyone. Enrolled people walk up, look toward the camera, and their attendance is recorded."
-    )
+    st.caption(policy["station_name"])
     with st.expander("Class or shift attendance (optional)"):
         scheduled = st.toggle("Use a scheduled session", key="scheduled_camera", disabled=running)
         if scheduled:
@@ -92,7 +132,7 @@ def render():
             }
             if not sessions:
                 st.info(
-                    "No scheduled check-in window is open. Create one in Settings → Schedules & organization, or turn this option off to use the daily station."
+                    "No scheduled check-in window is open. Create one in Attendance Operations → Active sessions, or turn this option off to use the daily station."
                 )
             selected = (
                 st.selectbox(
@@ -112,7 +152,7 @@ def render():
     if can("delete_attendance"):
         st.button(
             "Reset session attendance" if scheduled else "Reset today's attendance",
-            on_click=delete_attendance,
+            on_click=confirm_delete,
             kwargs={"params": {"start": day, "end": day, "session_id": session_id}},
             disabled=session_id is None,
             help="Clear this session's check-ins and stop its cameras. People and saved faces stay available.",
@@ -125,14 +165,14 @@ def render():
         )
     review = scheduled or not policy["station_auto_mark"]
     st.caption(
-        "Check-ins go to Records → Review & correct."
+        "Check-ins go to Attendance Operations → Pending reviews."
         if review
         else "Stable face matches are marked Present automatically. Unknown faces are not registered or marked."
     )
     if not running:
         if not station["enrolled_people"]:
             st.info(
-                "Add face samples in People → Enroll a face. You can still open the camera to check its view."
+                "Add face samples in Enrollment → Face enrollment. You can still open the camera to check its view."
             )
         if st.button(
             "Start attendance station", type="primary", disabled=scheduled and selected is None
@@ -143,17 +183,40 @@ def render():
                     if scheduled
                     else request("POST", "/station/start")
                 )
+            clear_live_activity()
             st.session_state.stream_id = result["stream_id"]
             st.session_state.camera_session_id = selected
             st.rerun()
+        preview, details = st.columns([2.7, 1.1])
+        with preview, st.container(border=True):
+            st.html(
+                '<div style="height:260px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1b2540;border-radius:10px;color:#dbe3f7"><span style="font-size:40px">◉</span><strong style="margin:12px 0">Camera is off</strong><span style="font-size:13px;color:#9aa8c6">Start the station to begin live recognition</span></div>'
+            )
+        with details, st.container(border=True):
+            st.subheader("Latest recognition")
+            empty(
+                "Waiting for the camera",
+                "Recognized people and their attendance status appear here.",
+            )
         st.caption(
             "Allow camera access once. Keep this page open and your computer awake while people check in. Video is not saved."
         )
     else:
-        if st.button("Stop attendance station"):
+        stop, refresh, settings = st.columns([1, 1, 2])
+        if stop.button("Stop attendance station", icon=":material/stop_circle:"):
             stop_stream()
             st.rerun()
-        camera, activity = st.columns([3, 1])
+        if refresh.button("Refresh camera", icon=":material/refresh:"):
+            stop_stream()
+            result = (
+                request("POST", "/vision/streams", json={"session_id": selected})
+                if scheduled
+                else request("POST", "/station/start")
+            )
+            st.session_state.stream_id = result["stream_id"]
+            st.rerun()
+        settings.caption("Select your camera in the live preview controls.")
+        camera, activity = st.columns([2.7, 1.1])
         with camera:
             stream_id = st.session_state.stream_id
             token = st.session_state.token
@@ -199,6 +262,7 @@ def render():
                     st.info("Connecting camera… Allow access when your browser asks.")
                     return
                 result = processor.snapshot()
+                capture_activity(result, config["timezone"])
                 if result.get("stopped"):
                     stop_stream()
                     st.session_state.notice = result["error"]
@@ -206,20 +270,62 @@ def render():
                 if result.get("error"):
                     st.error(result["error"])
                     return
-                faces = result.get("faces", [])
+                st.subheader("Latest recognition")
+                st.metric("Processing time", f"{result.get('latency_ms', 0):.0f} ms")
+                latest = st.session_state.get("live_latest")
+                faces = [latest] if latest else result.get("faces", [])[:1]
                 if not faces:
                     st.success("Station ready")
                     st.write("Waiting for someone to approach…")
                 for face in faces:
-                    st.write(f"**{face['name']}**")
+                    person_identity(
+                        {
+                            "full_name": face["name"],
+                            "institutional_id": face.get("institutional_id", "Unregistered"),
+                        }
+                    )
                     st.caption(face["label"])
+                    st.caption(
+                        "Session: "
+                        + (
+                            sessions[selected]["name"]
+                            if scheduled and selected
+                            else (station["session"] or {}).get("name", policy["station_name"])
+                        )
+                    )
+                    event_time = face.get("check_in") or face.get("observed_at")
+                    if event_time:
+                        st.caption(
+                            "Last event: "
+                            + datetime.fromisoformat(event_time)
+                            .astimezone(ZoneInfo(config["timezone"]))
+                            .strftime("%d %b · %H:%M:%S")
+                        )
+                    if face.get("person_id") and can("people"):
+                        photo_key = f"live_photo_{face['person_id']}"
+                        if photo_key not in st.session_state:
+                            try:
+                                st.session_state[photo_key] = request(
+                                    "GET", f"/people/{face['person_id']}/photo"
+                                )
+                            except APIError:
+                                st.session_state[photo_key] = None
+                        if st.session_state[photo_key]:
+                            st.image(st.session_state[photo_key], width=96)
                     if face.get("attendance_status") == "present":
                         st.success(face.get("feedback", "Attendance marked"))
                     else:
                         st.info(face.get("feedback", "Look toward the camera for a moment…"))
 
             feedback()
-    station_settings(policy)
+    if can("settings"):
+        st.button(
+            "Camera configuration",
+            type="tertiary",
+            icon=":material/tune:",
+            on_click=open_page,
+            args=("System Settings", "Camera configuration"),
+        )
 
     @st.fragment(run_every=3)
     def recent():
@@ -227,9 +333,12 @@ def render():
         session_id = selected if scheduled else (current["session"] or {}).get("id")
         day = sessions[selected]["local_date"] if scheduled and selected else current["date"]
         rows = (
-            request("GET", "/attendance", params={"start": day, "end": day}) if session_id else []
+            request(
+                "GET", "/attendance", params={"start": day, "end": day, "session_id": session_id}
+            )
+            if session_id
+            else []
         )
-        rows = [row for row in rows if row["session_id"] == session_id]
         a, b = st.columns(2)
         a.metric("Checked in today", sum(row["status"] in {"present", "late"} for row in rows))
         b.metric("Waiting for review", sum(row["status"] == "pending_verification" for row in rows))
@@ -253,5 +362,17 @@ def render():
                 hide_index=True,
                 use_container_width=True,
             )
+
+        with st.expander("Recognition activity", expanded=bool(st.session_state.get("stream_id"))):
+            events = st.session_state.get("live_events", [])
+            if events:
+                st.dataframe(events, hide_index=True, use_container_width=True)
+                st.caption(
+                    "Last 50 recognition changes in this browser session. Attendance records are saved separately."
+                )
+            else:
+                st.caption(
+                    "Recognition changes, errors and timestamps appear while the camera is running."
+                )
 
     recent()
